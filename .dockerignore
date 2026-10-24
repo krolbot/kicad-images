@@ -1,0 +1,4 @@
+.git
+.planning
+__pycache__
+.env*

@@ -25,7 +25,7 @@ RUN apt-get update \
         python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/kicad-mcp \
-    && /opt/kicad-mcp/bin/pip install --no-cache-dir mcp-server-kicad==0.20.1 \
+    && /opt/kicad-mcp/bin/pip install --no-cache-dir mcp-server-kicad==0.21.1 \
     && python3 -m venv --system-site-packages /opt/kicad-tools \
     && /opt/kicad-tools/bin/pip install --no-cache-dir \
         "kikit==${KIKIT_VERSION}" \
@@ -43,5 +43,11 @@ ENV PATH="/opt/kicad-mcp/bin:/opt/kicad-tools/bin:${PATH}" \
     HOME=/tmp/kicad-home \
     KICAD_PYTHON=/usr/bin/python3 \
     FREEROUTING_JAR=/opt/freerouting/freerouting.jar
+COPY mcp_smoke.py /usr/local/share/kicad/mcp_smoke.py
+RUN mkdir -p /tmp/kicad-build-check \
+    && cp -a /opt/kicad-home-template/. /tmp/kicad-build-check/ \
+    && HOME=/tmp/kicad-build-check /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_smoke.py \
+    && rm -rf /tmp/kicad-build-check
+USER 1000:1000
 WORKDIR /projects
 CMD ["sh", "-lc", "mkdir -p \"$HOME\" && cp -a /opt/kicad-home-template/. \"$HOME\"/ && exec sleep infinity"]

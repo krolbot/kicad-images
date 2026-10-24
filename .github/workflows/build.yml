@@ -7,6 +7,7 @@ on:
     paths:
       - Dockerfile
       - Dockerfile.gui
+      - mcp_smoke.py
       - .github/workflows/build.yml
 
 permissions:
@@ -30,8 +31,13 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/krolbot/kicad-mcp:10.0.6-0.20.1-fr2.1.0-tools1
-          cache-from: type=gha
+          tags: |
+            ghcr.io/krolbot/kicad-mcp:10.0.6-0.21.1-fr2.1.0-tools1
+            ghcr.io/krolbot/kicad-mcp:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/krolbot/kicad-images
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=kicad-mcp
           cache-to: type=gha,mode=max,scope=kicad-mcp
           provenance: true
 
@@ -51,7 +57,12 @@ jobs:
           file: Dockerfile.gui
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/krolbot/kicad-gui:10.0.3-tools3
+          tags: |
+            ghcr.io/krolbot/kicad-gui:10.0.3-tools3
+            ghcr.io/krolbot/kicad-gui:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/krolbot/kicad-images
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=kicad-gui
           cache-to: type=gha,mode=max,scope=kicad-gui
           provenance: true
