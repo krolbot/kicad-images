@@ -1,0 +1,3 @@
+# Keep the MCP protocol dependencies isolated from GUI/plugin dependencies.
+mcp-server-kicad==0.21.1
+mcp==2.3.0

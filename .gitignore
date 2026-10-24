@@ -1,0 +1,8 @@
+.planning/
+__pycache__/
+*.py[cod]
+.venv/
+config/
+projects/
+.env
+.env.*

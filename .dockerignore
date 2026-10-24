@@ -2,3 +2,7 @@
 .planning
 __pycache__
 .env*
+.venv
+config
+projects
+*.py[cod]

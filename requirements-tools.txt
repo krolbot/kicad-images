@@ -1,0 +1,12 @@
+# Backends shared by KiCad GUI plugins, command-line tools and KiBot.
+kikit==1.8.1
+pcbdraw==1.3.0
+skidl==2.3.0
+wireviz==0.4.1
+kicost==1.1.21
+kibot==1.9.1
+kiauto==2.3.10
+kidiff==2.6.0
+kibom==1.9.1
+# KiCost GUI still imports distutils.version; keep the setuptools compatibility layer.
+setuptools==81.0.0

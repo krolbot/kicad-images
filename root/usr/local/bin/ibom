@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+exec /opt/kicad-tools/bin/python \
+    /opt/kicad-addons/3rdparty/plugins/org_openscopeproject_InteractiveHtmlBom/generate_interactive_bom.py "$@"
