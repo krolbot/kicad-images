@@ -96,7 +96,7 @@ class PCMTests(unittest.TestCase):
                 pcm.unpack(raw, spec, self.bundle)
             self.assertEqual(list(self.bundle.iterdir()), [])
 
-    def test_ipc_environment_relocation_and_preserving_user_settings(self):
+    def test_native_null_vars_ipc_relocation_and_preserving_user_settings(self):
         self.prepare()
         identifier = "org.example.runtime"
         source = self.bundle / "python-environments" / identifier
@@ -104,8 +104,10 @@ class PCMTests(unittest.TestCase):
         (self.bundle / "ipc_environments.json").write_text(json.dumps({
             identifier: {"identifier": "org.example.test", "version": "1.0.0"}}))
         (self.bundle / "compatibility_aliases.json").write_text(json.dumps(["KICAD8_3RD_PARTY"]))
-        pcm.seed(self.bundle, self.home, self.stock)
         common_path = self.home / ".config/kicad/10.0/kicad_common.json"
+        common_path.parent.mkdir(parents=True)
+        common_path.write_text(json.dumps({"environment": {"vars": None}}))
+        pcm.seed(self.bundle, self.home, self.stock)
         common = json.loads(common_path.read_text())
         self.assertTrue(common["api"]["enable_server"])
         self.assertEqual(common["api"]["interpreter_path"], "/usr/bin/python3")

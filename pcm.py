@@ -163,7 +163,10 @@ def seed(bundle, home, stock):
         raise ValueError("Refusing symlinked common settings")
     common = json.loads(common_path.read_text()) if common_path.exists() else {}
     original_common = json.dumps(common, sort_keys=True)
-    variables = common.setdefault("environment", {}).setdefault("vars", {})
+    environment = common.setdefault("environment", {})
+    if environment.get("vars") is None:
+        environment["vars"] = {}
+    variables = environment["vars"]
     if not data.is_absolute():
         raise ValueError("KiCad content root must be an absolute path")
     variables.setdefault("KICAD10_3RD_PARTY", str(data))
