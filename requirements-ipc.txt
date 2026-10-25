@@ -1,0 +1,4 @@
+# Shared constraints; PySide6 is installed only by plugins that require it.
+protobuf==5.29.6
+pynng==0.9.0
+PySide6==6.11.1

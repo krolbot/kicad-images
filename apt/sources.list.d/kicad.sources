@@ -1,0 +1,6 @@
+# Official KiCad PPA key: FDA854F61C4D0D9572BB95E5245D5502FAD7A805
+Types: deb
+URIs: https://ppa.launchpadcontent.net/kicad/kicad-10.0-releases/ubuntu
+Suites: resolute
+Components: main
+Signed-By: /etc/apt/keyrings/kicad.asc

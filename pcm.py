@@ -35,7 +35,7 @@ def compatible(release, target):
             and (not release.get("platforms") or "linux" in release["platforms"]))
 
 
-def unpack(raw, spec, destination, target_version="10.0.3"):
+def unpack(raw, spec, destination, target_version="10.0.7"):
     """Follow KiCad's content-type/package-id mapping, never ZIP member paths."""
     if hashlib.sha256(raw).hexdigest() != spec["download_sha256"]:
         raise ValueError(f"Checksum mismatch: {spec['identifier']}")
@@ -125,8 +125,10 @@ def prepare_environments(lock_path, bundle):
         venv.EnvBuilder(system_site_packages=True, with_pip=True).create(target)
         subprocess.run([str(target / "bin/python"), "-m", "pip", "install", "--no-cache-dir",
                         "--only-binary=:all:", "-r", str(manifest.parent / "requirements.txt"),
-                        f"kicad-python=={spec['ipc_sdk_version']}",
-                        "protobuf==5.29.6", "pynng==0.9.0"], check=True)
+                        "-c", str(Path(__file__).with_name("requirements-ipc.txt")),
+                        f"kicad-python=={spec['ipc_sdk_version']}"], check=True,
+                       env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+                       | {"VIRTUAL_ENV": str(target)})
         (target / "pip.conf").write_text("[global]\ndisable-pip-version-check = true\n")
         environments[identifier] = {"identifier": spec["identifier"], "version": spec["version"]}
     (bundle / "ipc_environments.json").write_text(json.dumps(environments, indent=2) + "\n")

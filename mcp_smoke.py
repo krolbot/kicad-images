@@ -3,6 +3,7 @@ import asyncio
 import importlib.metadata
 import json
 import os
+import subprocess
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -12,6 +13,13 @@ async def main():
     version = importlib.metadata.version("mcp-server-kicad")
     assert version == "0.21.1", version
     expected_kicad = os.environ["KICAD_VERSION"]
+    native_versions = {}
+    for name, command in {
+        "cli": ["/usr/bin/kicad-cli", "version"],
+        "pcbnew": [os.environ["KICAD_PYTHON"], "-c", "import pcbnew; print(pcbnew.Version())"],
+    }.items():
+        native_versions[name] = subprocess.check_output(command, text=True).strip()
+        assert native_versions[name] == expected_kicad, native_versions
     params = StdioServerParameters(command="/usr/local/bin/kicad-mcp")
     async with asyncio.timeout(60):
         async with stdio_client(params) as (read, write):
@@ -30,7 +38,8 @@ async def main():
                 })
                 text = "\n".join(item.text for item in result.content if item.type == "text")
                 assert not result.is_error and "Symbol: R" in text and "Pin 1:" in text, text
-    print(json.dumps({"mcp_version": version, "kicad_version": expected_kicad, "tools": len(tools), "stock_symbol_read": True}))
+    print(json.dumps({"mcp_version": version, "kicad_version": expected_kicad, "native_versions": native_versions,
+                      "tools": len(tools), "stock_symbol_read": True}))
 
 
 if __name__ == "__main__":

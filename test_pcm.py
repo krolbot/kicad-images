@@ -88,8 +88,8 @@ class PCMTests(unittest.TestCase):
     def test_compatibility_and_patch_version_boundaries(self):
         for release in [{"kicad_version": "10.0.0", "kicad_version_max": "10.0"},
                         {"kicad_version": "9.0", "platforms": ["linux"]}]:
-            self.assertTrue(pcm.compatible(release, "10.0.3"))
-        for release in [{"kicad_version": "10.0.5"}, {"kicad_version_max": "9.99"},
+            self.assertTrue(pcm.compatible(release, "10.0.7"))
+        for release in [{"kicad_version": "10.0.9"}, {"kicad_version_max": "9.99"},
                         {"platforms": ["windows"]}]:
             raw, spec = self.archive(release=release)
             with self.subTest(release=release), self.assertRaisesRegex(ValueError, "Incompatible"):
@@ -156,7 +156,10 @@ class PCMTests(unittest.TestCase):
 class SourceContractTests(unittest.TestCase):
     def test_locked_bundle_and_unified_recipe(self):
         root = Path(__file__).parent
-        packages = json.loads((root / "addons.lock.json").read_text())["packages"]
+        lock = json.loads((root / "addons.lock.json").read_text())
+        packages = lock["packages"]
+        version = lock["kicad_version"]
+        self.assertEqual(pcm.unpack.__defaults__, (version,))
         self.assertTrue(packages)
         ids = [p["identifier"] for p in packages]
         self.assertEqual(len(ids), len(set(ids)))
@@ -165,9 +168,14 @@ class SourceContractTests(unittest.TestCase):
             self.assertRegex(spec["download_sha256"], r"^[0-9a-f]{64}$")
             self.assertTrue(spec["download_url"].startswith("https://"))
             self.assertTrue(spec["version"])
+            self.assertTrue(pcm.compatible(spec, version), spec["identifier"])
         recipe = (root / "Dockerfile").read_text()
         self.assertEqual(len(re.findall(r"^FROM ", recipe, re.M)), 1)
-        self.assertIn("linuxserver/kicad:", recipe)
+        self.assertIn("linuxserver/baseimage-selkies:ubunturesolute", recipe)
+        self.assertIn(f"ARG KICAD_PACKAGE_VERSION={version}~ubuntu26.04.1", recipe)
+        self.assertIn(f"KICAD_VERSION={version}", recipe)
+        workflow = (root / ".github/workflows/build.yml").read_text()
+        self.assertIn(f"ghcr.io/krolbot/kicad-gui:{version}-", workflow)
         self.assertIn("@sha256:", recipe)
         self.assertFalse((root / "Dockerfile.gui").exists())
         self.assertIn("requirements-mcp.txt", recipe)
