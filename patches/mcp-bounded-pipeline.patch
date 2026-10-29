@@ -1,0 +1,21 @@
+--- a/mcp_server_kicad/_freerouting.py
++++ b/mcp_server_kicad/_freerouting.py
+@@ -506,6 +506,7 @@
+         "--router.optimizer.enabled=false",
+         "--router.automatic_neckdown=false",
+         "--router.fanout.enabled=true",
++        f"--router.fanout.max_passes={max_passes}",
+         f"--user_data_path={Path(dsn_path).parent / 'freerouting'}",
+         "--gui.enabled=false",
+         "--usage_and_diagnostic_data.disable_analytics=true",
+--- a/mcp_server_kicad/pcb.py
++++ b/mcp_server_kicad/pcb.py
+@@ -5506,7 +5506,7 @@
+ 
+     Args:
+         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+-        max_passes: Maximum autorouter passes; post-route optimization is disabled.
++        max_passes: Maximum fanout and autorouter passes; post-route optimization is disabled.
+         num_threads: Thread count for routing. Defaults to 1 because
+             freerouting prints "Multi-threaded route optimization is broken
+             and it is known to generate clearance violations" on every run.

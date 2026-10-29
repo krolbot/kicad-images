@@ -1,8 +1,11 @@
+FROM eclipse-temurin:25-jdk@sha256:8c052273471ca5128e67f18ffe9e9c32abf1b104bb0090fa10175eda51004145 AS freerouting-build
+ADD --checksum=sha256:f6f51bb02245e8e717f9359bd260cc9c5c0b1bc0acc8b7cb2cd5b8ffeb5de3c7 https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar /build/upstream.jar
+COPY freerouting/FoundConnectionInserter.java /build/FoundConnectionInserter.java
+RUN javac -J-Xmx512m -proc:none -implicit:none --release 25 -cp /build/upstream.jar -d /build/classes /build/FoundConnectionInserter.java
+
 FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute@sha256:beebd1f142f792e9767780a70cbc6c41c6c448e12fcda4504417404f1f118df3
 
 ARG KICAD_PACKAGE_VERSION=10.0.7~ubuntu26.04.1
-ARG FREEROUTING_VERSION=2.1.0
-ARG FREEROUTING_SHA256=2c07d58f75dac03782664081e7a58b41c25400d871a9fcf166a2ea6fe60d5def
 
 # LinuxServer /init needs root; desktop and MCP operations use abc.
 # hadolint ignore=DL3002
@@ -34,7 +37,7 @@ RUN apt-get update \
         libxcb-cursor0 \
         mupdf-tools \
         ngspice \
-        openjdk-21-jre-headless \
+        openjdk-25-jre-headless \
         openscad \
         poppler-utils \
         python3-cairo \
@@ -61,11 +64,24 @@ RUN apt-get update \
     && /opt/kicad-mcp/bin/pip install --no-cache-dir -r /opt/kicad-build/requirements-mcp.txt \
     && /opt/kicad-mcp/bin/pip check \
     && install -d /opt/freerouting \
-    && curl -fsSL "https://github.com/freerouting/freerouting/releases/download/v${FREEROUTING_VERSION}/freerouting-${FREEROUTING_VERSION}.jar" -o /opt/freerouting/freerouting.jar \
-    && printf '%s  %s\n' "$FREEROUTING_SHA256" /opt/freerouting/freerouting.jar | sha256sum -c - \
     && chmod -R a+rX /opt/kicad-tools /opt/kicad-mcp /opt/freerouting
 
-COPY pcm.py addons.lock.json requirements-ipc.txt mcp_smoke.py /usr/local/share/kicad/
+COPY --from=freerouting-build /build/upstream.jar /opt/freerouting/freerouting.jar
+COPY --from=freerouting-build /build/classes/ /opt/kicad-build/freerouting-classes/
+COPY freerouting/patch_jar.py /opt/kicad-build/patch_freerouting_jar.py
+RUN /usr/bin/python3 /opt/kicad-build/patch_freerouting_jar.py /opt/freerouting/freerouting.jar /opt/kicad-build/freerouting-classes
+LABEL dev.nlab.freerouting.base="2.5.0" \
+      dev.nlab.freerouting.fix="b51633f0ccfe9ddd921ef55fa709d673d101c14e"
+
+COPY patches/mcp-write-permission.patch patches/mcp-autoroute.patch patches/mcp-bounded-pipeline.patch /opt/kicad-build/
+RUN cd "$(/opt/kicad-mcp/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
+    && git apply --check /opt/kicad-build/mcp-write-permission.patch \
+    && git apply /opt/kicad-build/mcp-write-permission.patch \
+    && git apply --check /opt/kicad-build/mcp-autoroute.patch \
+    && git apply /opt/kicad-build/mcp-autoroute.patch \
+    && git apply --check /opt/kicad-build/mcp-bounded-pipeline.patch \
+    && git apply /opt/kicad-build/mcp-bounded-pipeline.patch
+COPY pcm.py addons.lock.json requirements-ipc.txt mcp_smoke.py mcp_autoroute_smoke.py /usr/local/share/kicad/
 RUN /usr/bin/python3 /usr/local/share/kicad/pcm.py build /usr/local/share/kicad/addons.lock.json /opt/kicad-addons \
     && /usr/bin/python3 /usr/local/share/kicad/pcm.py runtimes /usr/local/share/kicad/addons.lock.json /opt/kicad-addons \
     && chmod -R a+rX /opt/kicad-addons
@@ -79,7 +95,8 @@ ENV PATH="/opt/kicad-tools/bin:/opt/kicad-mcp/bin:${PATH}" \
     KICAD_PYTHON=/usr/bin/python3 \
     FREEROUTING_JAR=/opt/freerouting/freerouting.jar
 
-RUN env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_smoke.py
+RUN env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_smoke.py \
+    && env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_autoroute_smoke.py
 
 # The inherited /init starts the browser desktop; MCP is invoked via docker exec.
 WORKDIR /projects

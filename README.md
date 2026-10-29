@@ -4,9 +4,9 @@
 
 ## Состояние
 
-Подготовлен единый `Dockerfile`; изменения проверяются без сборки и запуска CAD-образа. Публикация нового монолитного образа запускается **только вручную** через GitHub Actions → **KiCad toolkit** → **Run workflow**. Наличие исходников не означает, что новый тег уже опубликован.
+Подготовлен единый `Dockerfile` с Freerouting 2.5.0 и защитой исходной меди при выборочном импорте; изменения проверяются без автоматической сборки и запуска CAD-образа. Публикация нового монолитного образа запускается **только вручную** через GitHub Actions → **KiCad toolkit** → **Run workflow**. Наличие исходников не означает, что новый тег уже опубликован.
 
-Тег следующей сборки: `ghcr.io/krolbot/kicad-gui:10.0.7-0.21.1-fr2.1.0-tools5`. Каждая сборка также публикует `sha-<полный SHA коммита>` и OCI-метку `org.opencontainers.image.revision`.
+Тег следующей сборки: `ghcr.io/krolbot/kicad-gui:10.0.7-0.21.1-fr2.5.0-tools6`. Каждая сборка также публикует `sha-<полный SHA коммита>` и OCI-метку `org.opencontainers.image.revision`.
 
 Основа — LinuxServer.io Selkies на Ubuntu 26.04, закреплённая по digest. KiCad и штатные библиотеки устанавливаются из [официального PPA KiCad 10](https://www.kicad.org/download/linux-distros/#_ubuntu) с точной версией пакетов `10.0.7~ubuntu26.04.1`. Ключ PPA включён в `apt/keyrings/kicad.asc`; его отпечаток `FDA854F61C4D0D9572BB95E5245D5502FAD7A805` и подпись индекса проверены. APT использует отдельный `Signed-By`, без отключения проверки подписей. GUI, CLI, Python `pcbnew` и MCP используют **один KiCad 10.0.7**. Браузерный рабочий стол запускает менеджер KiCad; по умолчанию выбран X11, Docker внутри контейнера отключён. Старые раздельные теги остаются историческими сборками.
 
@@ -16,7 +16,7 @@
 
 - KiCad: менеджер проектов, Eeschema, Pcbnew, штатные библиотеки, 3D-просмотр, `kicad-cli` и системный `pcbnew`.
 - MCP: `mcp-server-kicad==0.21.1`, отдельное Python-окружение **в том же образе**.
-- Маршрутизация: Freerouting 2.1.0, Java 21, закреплённый JAR с проверкой SHA-256.
+- Маршрутизация: Freerouting 2.5.0 с точечным backport [PR974](https://github.com/freerouting/freerouting/pull/974), Java 25. В официальном JAR заменён только `FoundConnectionInserter.class`; fanout включён при `automatic_neckdown=false`, `max_passes` ограничивает fanout и автороутер, а оптимизатор выключен. При `autoroute_pcb(nets=...)` исходные `segment`/`arc`/`via` сохраняются с исходными UUID и геометрией; из результата добавляется только новая медь выбранных цепей.
 - Автоматизация: KiKit 1.8.1, PcbDraw 1.3.0, SKiDL 2.3.0, WireViz 0.4.1, KiCost 1.1.21, KiBot 1.9.1, KiAuto 2.3.10, KiDiff 2.6.0, KiBoM 1.9.1.
 - Расчёты и выпуск документации: ngspice, NumPy, SciPy, Shapely, Graphviz, Cairo, ReportLab, Ghostscript, Inkscape, ImageMagick, MuPDF, Poppler, librsvg, OpenSCAD, Xvfb, xdotool.
 - Графические зависимости дополнений: системный wxPython; PySide6 6.11.1 устанавливается из готовых Linux-колёс только в окружения двух Qt-плагинов. `ibom` запускает генератор InteractiveHtmlBom из закреплённого пакета.

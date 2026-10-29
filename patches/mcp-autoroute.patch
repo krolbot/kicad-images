@@ -1,0 +1,183 @@
+diff --git a/mcp_server_kicad/_freerouting.py b/mcp_server_kicad/_freerouting.py
+index 8cd8fa8..7d212ce 100644
+--- a/mcp_server_kicad/_freerouting.py
++++ b/mcp_server_kicad/_freerouting.py
+@@ -480,6 +480,7 @@ def run_freerouting(
+     timeout: int = 600,
+     *,
+     java: str,
++    protect_existing: bool = False,
+ ) -> str | None:
+     """Run Freerouting autorouter on a DSN file.
+ 
+@@ -492,10 +493,20 @@ def run_freerouting(
+ 
+     Returns error message or None on success.
+     """
++    if max_passes < 1 or num_threads < 1 or timeout < 1:
++        return "max_passes, num_threads and timeout must be positive."
++    if protect_existing:
++        # Only KiCad's generated DSN is changed, never the source board.
++        dsn = Path(dsn_path).read_bytes()
++        _atomic_write(Path(dsn_path), re.sub(rb"\(type\s+route\)", b"(type fix)", dsn))
+     cmd = [
+         java,
+         "-jar",
+         jar_path,
++        "--router.optimizer.enabled=false",
++        "--router.automatic_neckdown=false",
++        "--router.fanout.enabled=true",
++        f"--user_data_path={Path(dsn_path).parent / 'freerouting'}",
+         "--gui.enabled=false",
+         "--usage_and_diagnostic_data.disable_analytics=true",
+         "-de",
+diff --git a/mcp_server_kicad/pcb.py b/mcp_server_kicad/pcb.py
+index 0cf8405..45331f8 100644
+--- a/mcp_server_kicad/pcb.py
++++ b/mcp_server_kicad/pcb.py
+@@ -5464,6 +5464,44 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
+ _AUTOROUTE = ToolAnnotations(read_only_hint=False, open_world_hint=True)
+ 
+ 
++def _copper_geometry(node) -> bytes:
++    """Copper bytes without board-local identity and net spelling."""
++    copy = node.copy()
++    for head in ("uuid", "tstamp", "net"):
++        for child in copy.find_all(head):
++            copy.remove_child(child)
++    return _cst.serialize(copy)
++
++
++def _selected_routes(source: bytes, routed_path: str, nets: list[str]) -> bytes:
++    """Preserve every source node and append only new selected-net copper."""
++    doc = _cst.parse(source)
++    root = doc.lists[0]
++    routed = _cst.parse(_read_kicad_bytes(routed_path, "routed board")).lists[0]
++    selected = set(nets)
++    copper = {"segment", "arc", "via"}
++    source_copper = [
++        node for node in root.lists
++        if node.head in copper and _net_name_of(root, node) in selected
++    ]
++    identities = {_uuid_text(node) for node in source_copper if _uuid_text(node)}
++    geometries = {_copper_geometry(node) for node in source_copper}
++    for node in routed.lists:
++        if node.head not in copper or (name := _net_name_of(routed, node)) not in selected:
++            continue
++        identity = _uuid_text(node)
++        geometry = _copper_geometry(node)
++        if (identity and identity in identities) or geometry in geometries:
++            continue
++        copy = node.copy()
++        _set_item_net(copy, root, _resolve_net_cst(root, name))
++        root.append_child(copy, b"\n\t")
++        if identity:
++            identities.add(identity)
++        geometries.add(geometry)
++    return _cst.serialize(doc)
++
++
+ @mcp.tool(annotations=_AUTOROUTE)
+ def autoroute_pcb(
+     pcb_path: str = PCB_PATH,
+@@ -5471,6 +5509,7 @@ def autoroute_pcb(
+     num_threads: int = 1,
+     timeout: int = 600,
+     output_dir: str = OUTPUT_DIR,
++    nets: list[str] | None = None,
+ ) -> AutorouteResult:
+     """Autoroute PCB traces using the Freerouting autorouter.
+ 
+@@ -5486,7 +5525,7 @@ def autoroute_pcb(
+ 
+     Args:
+         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+-        max_passes: Maximum autorouter optimization passes
++        max_passes: Maximum autorouter passes; post-route optimization is disabled.
+         num_threads: Thread count for routing. Defaults to 1 because
+             freerouting prints "Multi-threaded route optimization is broken
+             and it is known to generate clearance violations" on every run.
+@@ -5494,10 +5533,24 @@ def autoroute_pcb(
+         timeout: Max seconds to wait for routing (default: 600)
+         output_dir: Directory for output files (default: same as PCB).
+             Optional; omit to use the configured default.
++        nets: Exact net names to import. With this option all existing copper
++            is protected in the DSN, and only these nets' tracks/vias are
++            imported. Other source bytes are preserved. The router still
++            searches all nets; this is an output filter, not a search filter.
++            Optimization is disabled to keep the routing call bounded.
+     """
+     _require_kicad_path(pcb_path, "board")
+     # Resolve to absolute path for subprocess calls
+     pcb_path = str(Path(pcb_path).resolve())
++    source = _read_kicad_bytes(pcb_path, "board")
++    if max_passes < 1 or num_threads < 1 or timeout < 1:
++        raise ToolError("max_passes, num_threads and timeout must be positive.")
++    if nets is not None:
++        if not nets or any(not name for name in nets):
++            raise ToolError("nets must contain at least one exact, nonempty net name.")
++        root = _cst.parse(source).lists[0]
++        for name in nets:
++            _resolve_net_cst(root, name)
+ 
+     # Pre-flight: the JAR first, because it is what says which Java it needs.
+     # The reverse order asserted a constant 17 while the download, unpinned
+@@ -5545,8 +5598,15 @@ def autoroute_pcb(
+         )
+ 
+     out_dir = output_dir or str(Path(pcb_path).parent)
++    _ensure_dir(out_dir)
+     stem = Path(pcb_path).stem
+     routed_path = str(Path(out_dir) / f"{stem}_routed.kicad_pcb")
++    drc_out = str(Path(out_dir) / f"{stem}_routed-drc.json")
++    try:
++        Path(routed_path).unlink(missing_ok=True)
++        Path(drc_out).unlink(missing_ok=True)
++    except OSError as e:
++        raise ToolError(f"Failed to clear stale autoroute output: {e}") from e
+ 
+     with tempfile.TemporaryDirectory() as tmp_dir:
+         dsn_path = str(Path(tmp_dir) / f"{stem}.dsn")
+@@ -5571,6 +5631,7 @@ def autoroute_pcb(
+             num_threads=num_threads,
+             timeout=timeout,
+             java=java,
++            protect_existing=nets is not None,
+         )
+         if route_err:
+             raise ToolError(route_err)
+@@ -5578,13 +5639,23 @@ def autoroute_pcb(
+         if not Path(ses_path).exists():
+             raise ToolError("Freerouting did not produce a session file.")
+ 
+-        # Step 4: Import SES into new PCB
+-        ses_err = _import_ses(pcb_path, ses_path, routed_path)
++        # Step 4: Import SES into a temporary board, then publish atomically
++        imported_path = str(Path(tmp_dir) / "imported.kicad_pcb")
++        ses_err = _import_ses(pcb_path, ses_path, imported_path)
+         if ses_err:
+             raise ToolError(ses_err)
++        if nets:
++            routed = _selected_routes(source, imported_path, nets)
++            warnings.append(
++                "All source copper is preserved; only new selected-net paths were appended. "
++                "Search still covers all nets. Refill zones and run DRC in the source project context."
++            )
++        else:
++            routed = _read_kicad_bytes(imported_path, "routed board")
++        _atomic_write(Path(routed_path), routed)
+ 
+     # Step 5: Fix displaced footprint text fields
+-    text_fields_fixed = _fix_displaced_fp_text(routed_path)
++    text_fields_fixed = 0 if nets else _fix_displaced_fp_text(routed_path)
+ 
+     # Count traces/vias in routed board
+     traces_after, vias_after, _ = _trace_counts(routed_path)
+@@ -5594,7 +5665,6 @@ def autoroute_pcb(
+ 
+     # Optional DRC
+     try:
+-        drc_out = str(Path(out_dir) / f"{stem}_routed-drc.json")
+         _run_cli(
+             ["pcb", "drc", "--format", "json", "--severity-all", "--output", drc_out, routed_path],
+             check=False,

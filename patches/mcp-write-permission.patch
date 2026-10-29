@@ -1,0 +1,19 @@
+diff --git a/mcp_server_kicad/_shared.py b/mcp_server_kicad/_shared.py
+--- a/mcp_server_kicad/_shared.py
++++ b/mcp_server_kicad/_shared.py
+@@ -736,7 +736,14 @@ def _atomic_write(path: str | Path, data: bytes, *, like: int | None = None) -> None:
+     # 0600 also masks off whatever a directory default ACL grants. A new file
+     # with nothing to carry keeps the umask's mode, as before.
+     created = 0o600 if carry else 0o666
+-    f = open(tmp, "xb", opener=lambda name, flags: os.open(name, flags, created))
++    try:
++        f = open(tmp, "xb", opener=lambda name, flags: os.open(name, flags, created))
++    except PermissionError as exc:
++        raise ToolError(
++            f"Could not atomically write {p}: Permission denied creating a temporary file"
++            f" in {p.parent}. The file is unchanged. The MCP user needs write/search"
++            " access to that directory; use a user-owned working copy if it is read-only."
++        ) from exc
+     try:
+         with f:
+             if carry:

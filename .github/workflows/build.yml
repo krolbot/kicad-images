@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.14'
       - run: python -m unittest -v test_pcm.py
-      - run: python -m compileall -q pcm.py mcp_smoke.py
+      - run: python -m compileall -q pcm.py mcp_smoke.py mcp_autoroute_smoke.py
       - run: |
           sh -n root/usr/local/bin/kicad-mcp root/usr/local/bin/freerouting root/usr/local/bin/ibom root/defaults/autostart root/defaults/autostart_wayland
           bash -n root/custom-cont-init.d/50-kicad-toolkit.sh
@@ -48,7 +48,7 @@ jobs:
           push: true
           # Reuse the existing public package; no new private GHCR package.
           tags: |
-            ghcr.io/krolbot/kicad-gui:10.0.7-0.21.1-fr2.1.0-tools5
+            ghcr.io/krolbot/kicad-gui:10.0.7-0.21.1-fr2.5.0-tools6
             ghcr.io/krolbot/kicad-gui:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/krolbot/kicad-images
