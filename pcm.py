@@ -35,7 +35,7 @@ def compatible(release, target):
             and (not release.get("platforms") or "linux" in release["platforms"]))
 
 
-def unpack(raw, spec, destination, target_version="10.0.7"):
+def unpack(raw, spec, destination, target_version="10.0.8"):
     """Follow KiCad's content-type/package-id mapping, never ZIP member paths."""
     if hashlib.sha256(raw).hexdigest() != spec["download_sha256"]:
         raise ValueError(f"Checksum mismatch: {spec['identifier']}")

@@ -183,6 +183,10 @@ class SourceContractTests(unittest.TestCase):
         self.assertFalse((root / "Dockerfile.gui").exists())
         self.assertIn("requirements-mcp.txt", recipe)
         self.assertIn("pcm.py build", recipe)
+        self.assertIn("pip install --no-cache-dir --no-compile", recipe)
+        self.assertIn("kibot --help-output gerber", recipe)
+        for directory in ["/config/.config/kicad", "/config/.cache", "/config/.local/share/kicad"]:
+            self.assertIn(f'"{directory}"', recipe)
         requirements = (root / "requirements-tools.txt").read_text().splitlines()
         expected = {"kikit", "pcbdraw", "skidl", "wireviz", "kicost", "kibot", "kiauto", "kidiff", "kibom", "setuptools"}
         self.assertEqual({line.split("==")[0] for line in requirements if line and not line.startswith("#")}, expected)
