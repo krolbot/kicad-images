@@ -185,6 +185,8 @@ class SourceContractTests(unittest.TestCase):
         self.assertIn("pcm.py build", recipe)
         self.assertIn("pip install --no-cache-dir --no-compile", recipe)
         self.assertIn("kibot --help-output gerber", recipe)
+        self.assertIn("rm -rf /tmp/org.kicad.kicad /tmp/kicad /tmp/.X11-unix", recipe)
+        self.assertIn("install -d -m 1777 -o root -g root /tmp/.X11-unix", recipe)
         for directory in ["/config/.config/kicad", "/config/.cache", "/config/.local/share/kicad"]:
             self.assertIn(f'"{directory}"', recipe)
         requirements = (root / "requirements-tools.txt").read_text().splitlines()

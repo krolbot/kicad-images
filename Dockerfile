@@ -123,7 +123,9 @@ RUN install -d -o abc -g abc /projects /opt/kicad-build/probe-home \
     && /usr/bin/python3 -c 'from pathlib import Path; import shutil; paths=list(map(Path, ["/config/.config/kicad", "/config/.cache", "/config/.local/share/kicad"])); assert not any(p.is_symlink() for p in paths); [shutil.rmtree(p) for p in paths if p.exists()]'
 
 # A fresh RUN gives Xvfb a clean process/socket namespace after the HTML BOM probe.
-RUN /command/s6-setuidgid abc env -u PYTHONPATH timeout 120s xvfb-run -a -e /dev/stderr /opt/kicad-mcp/bin/python -u /usr/local/share/kicad/native_ipc_smoke.py
+RUN /command/s6-setuidgid abc env -u PYTHONPATH timeout 120s xvfb-run -a -e /dev/stderr /opt/kicad-mcp/bin/python -u /usr/local/share/kicad/native_ipc_smoke.py \
+    && rm -rf /tmp/org.kicad.kicad /tmp/kicad /tmp/.X11-unix \
+    && install -d -m 1777 -o root -g root /tmp/.X11-unix
 
 # The inherited /init starts the browser desktop; MCP is invoked via docker exec.
 WORKDIR /projects
