@@ -154,7 +154,7 @@ RUN install -d -o abc -g abc /projects /opt/kicad-build/probe-home \
     && /command/s6-setuidgid abc env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_autoroute_smoke.py \
     && install -d -o abc -g abc /projects/board-batch-smoke \
     && /command/s6-setuidgid abc env -u PYTHONPATH /usr/bin/python3 /usr/local/share/kicad/mcp_board_batch_fixture.py /projects/board-batch-smoke/fixture.kicad_pcb \
-    && /command/s6-setuidgid abc env -u PYTHONPATH BATCH_FIXTURE=/projects/board-batch-smoke/fixture.kicad_pcb /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_board_batch_smoke.py \
+    && /command/s6-setuidgid abc env -u PYTHONPATH BATCH_FIXTURE=/projects/board-batch-smoke/fixture.kicad_pcb xvfb-run -a -e /dev/stderr /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_board_batch_smoke.py \
     && rm -rf /projects/board-batch-smoke \
     && /command/s6-setuidgid abc env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_toolkit_smoke.py \
     && rm -rf /opt/kicad-build/probe-home \

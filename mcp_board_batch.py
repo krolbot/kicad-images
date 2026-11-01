@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from mcp_server_kicad import pcb
 from mcp_server_kicad._shared import ToolError, build_server
@@ -35,10 +35,13 @@ _RENAME_EXCHANGE = 2
 
 
 class FootprintMove(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     reference: str = Field(min_length=1, max_length=64)
     x_mm: float
     y_mm: float
     rotation_deg: float | None = None
+    layer: Literal["F.Cu", "B.Cu"] | None = None
 
 
 class TraceAdd(BaseModel):
@@ -192,8 +195,13 @@ def _pad_map(footprint: dict) -> dict[str, dict]:
     return {pad["number"]: pad for pad in footprint["pads"]}
 
 
-def _pad_static(pad: dict) -> dict:
-    return {key: value for key, value in pad.items() if key != "position_mm"}
+def _pad_identity(pad: dict) -> dict:
+    return {key: value for key, value in pad.items() if key not in {"position_mm", "layers"}}
+
+
+def _pad_copper_side(pad: dict) -> str | None:
+    front, back = "F.Cu" in pad["layers"], "B.Cu" in pad["layers"]
+    return "F.Cu" if front and not back else "B.Cu" if back and not front else None
 
 
 def _all_by_uuid(state: dict) -> dict[str, dict]:
@@ -311,15 +319,23 @@ def _verify(
                 failures.append(f"unrequested footprint changed: {reference}")
             continue
         spec = moved[reference]
-        if candidate["uuid"] != footprint["uuid"] or candidate["layer"] != footprint["layer"]:
+        expected_layer = spec.layer or footprint["layer"]
+        if candidate["uuid"] != footprint["uuid"] or candidate["layer"] != expected_layer:
             failures.append(f"footprint identity/layer changed: {reference}")
         if candidate["position_mm"] != [round(spec.x_mm, 6), round(spec.y_mm, 6)]:
             failures.append(f"footprint position mismatch: {reference}")
         if spec.rotation_deg is not None and candidate["rotation_deg"] % 360 != round(spec.rotation_deg, 6) % 360:
             failures.append(f"footprint rotation mismatch: {reference}")
         old_pads, new_pads = _pad_map(footprint), _pad_map(candidate)
+        flipping = expected_layer != footprint["layer"]
         if set(old_pads) != set(new_pads) or any(
-            _pad_static(old_pads[number]) != _pad_static(new_pads[number])
+            _pad_identity(old_pads[number]) != _pad_identity(new_pads[number])
+            or (not flipping and old_pads[number]["layers"] != new_pads[number]["layers"])
+            or (
+                flipping
+                and _pad_copper_side(old_pads[number]) is not None
+                and _pad_copper_side(new_pads[number]) != expected_layer
+            )
             for number in old_pads.keys() & new_pads.keys()
         ):
             failures.append(f"footprint pad identity changed: {reference}")
@@ -457,8 +473,9 @@ def edit_board_copper_batch(
 ) -> dict:
     """Dry-run or atomically apply one bounded native PCB edit package.
 
-    The package may move footprints, remove exact segment/arc/via UUIDs, add explicit traces
-    and vias by net NAME, and optionally call the installed scoped autoroute_pcb mechanism.
+    The package may move footprints (including an optional native F.Cu/B.Cu side flip),
+    remove exact segment/arc/via UUIDs, add explicit traces and vias by net NAME, and
+    optionally call the installed scoped autoroute_pcb mechanism.
     Autorouting is always single-threaded, preserves old copper, and imports only requested
     nets. new_trace_widths changes only copper newly created by that autoroute call.
 

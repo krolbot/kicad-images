@@ -9,6 +9,15 @@ import mcp_board_batch as batch
 
 
 class AtomicBoardWriteTests(unittest.TestCase):
+    def test_footprint_move_layer_is_optional_strict_front_or_back(self):
+        legacy = batch.FootprintMove(reference="J1", x_mm=1, y_mm=2)
+        self.assertIsNone(legacy.layer)
+        self.assertEqual(batch.FootprintMove(reference="J1", x_mm=1, y_mm=2, layer="F.Cu").layer, "F.Cu")
+        with self.assertRaisesRegex(ValueError, "Input should be 'F.Cu' or 'B.Cu'"):
+            batch.FootprintMove.model_validate({"reference": "J1", "x_mm": 1, "y_mm": 2, "layer": "front"})
+        with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
+            batch.FootprintMove.model_validate({"reference": "J1", "x_mm": 1, "y_mm": 2, "side": "F.Cu"})
+
     def test_stage_project_preserves_local_libraries_without_linking_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary) / "project"
