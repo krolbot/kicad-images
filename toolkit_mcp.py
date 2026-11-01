@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from toolkit_native import REPLICATION_DEFAULTS
 
+import mcp_board_batch as board_batch
 from mcp_server_kicad import _cst, server as upstream
 
 PROJECT_ROOT = Path("/projects")
@@ -36,6 +37,7 @@ mcp = MCPServer(
       "panelize_pcb for KiKit panels and generate_interactive_bom for assembly HTML. "
       "discover_replication precedes replicate_layout; place_footprints and place_parts create new boards. "
       "scan_project_dependencies precedes localize_project_dependencies, which works only on a project copy. "
+      "get_board_edit_state precedes CAS-guarded edit_board_copper_batch, whose dry run is required before apply. "
       "Toolkit operations accept absolute paths within /projects, preserve their inputs and require a NEW output directory. "
       "An existing output is an error, not permission to replace it. Generated artifacts are not an electrical approval; use run_erc/run_drc.",
 )
@@ -430,7 +432,14 @@ def localize_project_dependencies(project_dir: str, output_dir: str,
 
 
 # Reuse the pinned upstream composition function, preserving every original tool.
-for _module in [upstream.schematic, upstream.pcb, upstream.symbol, upstream.footprint, upstream.project]:
+for _module in [
+    upstream.schematic,
+    upstream.pcb,
+    upstream.symbol,
+    upstream.footprint,
+    upstream.project,
+    board_batch,
+]:
     upstream._copy_tools(_module.mcp, mcp)
 
 

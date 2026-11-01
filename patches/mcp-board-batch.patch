@@ -1,0 +1,22 @@
+diff --git a/mcp_server_kicad/server.py b/mcp_server_kicad/server.py
+index 6f1e29a..0000000 100644
+--- a/mcp_server_kicad/server.py
++++ b/mcp_server_kicad/server.py
+@@ -2,7 +2,7 @@
+ 
+ from mcp.server import MCPServer
+ 
+-from mcp_server_kicad import footprint, pcb, project, schematic, symbol
++from mcp_server_kicad import board_batch, footprint, pcb, project, schematic, symbol
+ from mcp_server_kicad._shared import build_server
+ 
+ mcp = build_server(
+@@ -57,7 +57,7 @@ def _copy_tools(source_mcp: MCPServer, target_mcp: MCPServer) -> None:
+ 
+ def main() -> None:
+     """Entry point for unified mcp-server-kicad console script."""
+-    for mod in [schematic, pcb, symbol, footprint, project]:
++    for mod in [schematic, pcb, symbol, footprint, project, board_batch]:
+         _copy_tools(mod.mcp, mcp)
+     mcp.run(transport="stdio")
+ 

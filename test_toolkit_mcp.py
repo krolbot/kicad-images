@@ -128,7 +128,8 @@ class ToolkitBoundaries(unittest.TestCase):
         self.assertTrue(original <= actual.keys())
         added = {"get_toolkit_status", "manufacture_pcb", "generate_interactive_bom", "panelize_pcb",
                  "discover_replication", "replicate_layout", "place_footprints", "place_parts",
-                 "scan_project_dependencies", "localize_project_dependencies"}
+                 "scan_project_dependencies", "localize_project_dependencies",
+                 "get_board_edit_state", "edit_board_copper_batch"}
         self.assertEqual(set(actual) - original, added)
         for name in added:
             self.assertIsNotNone(actual[name].annotations)
