@@ -1,0 +1,20 @@
+--- a/src/xspice/icm/xtradev/pswitch/cfunc.mod
++++ b/src/xspice/icm/xtradev/pswitch/cfunc.mod
+@@ -246,7 +246,7 @@
+             }
+             else {
+                 r = exp(logmean + loc->c1 * inmean - loc->c3 * inmean * inmean * inmean);
+-                if(r<r_on) r=r_on;/* minimum resistance limiter */
++                if (r < fmin(r_on, r_off)) r = fmin(r_on, r_off);/* minimum resistance limiter */
+             }
+         } else {
+             inmean = (cntl_on - INPUT(cntl_in)) / (cntl_on - cntl_off) - cntl_mean;
+@@ -260,7 +260,7 @@
+             }
+             else {
+                 r = exp(logmean + loc->c1 * inmean - loc->c3 * inmean * inmean * inmean);
+-                if(r<r_on) r=r_on;/* minimum resistance limiter */
++                if (r < fmin(r_on, r_off)) r = fmin(r_on, r_off);/* minimum resistance limiter */
+             }
+         }
+ 

@@ -3,6 +3,27 @@ ADD --checksum=sha256:f6f51bb02245e8e717f9359bd260cc9c5c0b1bc0acc8b7cb2cd5b8ffeb
 COPY freerouting/FoundConnectionInserter.java /build/FoundConnectionInserter.java
 RUN javac -J-Xmx512m -proc:none -implicit:none --release 25 -cp /build/upstream.jar -d /build/classes /build/FoundConnectionInserter.java
 
+FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute@sha256:beebd1f142f792e9767780a70cbc6c41c6c448e12fcda4504417404f1f118df3 AS ngspice-build
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        autoconf automake bison ca-certificates curl flex gcc git libc6-dev libtool make \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:cbd87c9f2490052c8e9be1ae8c12016a879f610c9d2bc0034f526783987a1f3f https://codeload.github.com/vibeic/ngspice/tar.gz/724dc77b9153dc75eaec474b1f7a44f1fcf5f362 /build/ngspice.tar.gz
+COPY patches/ngspice-vswitch-inverse-resistance.patch /build/fix.patch
+# Match the distro code-model ABI, including CIDER fields in SPICEdev.
+RUN mkdir /build/source \
+    && tar -xzf /build/ngspice.tar.gz --strip-components=1 -C /build/source \
+    && cd /build/source \
+    && git apply --check /build/fix.patch \
+    && git apply /build/fix.patch \
+    && ./autogen.sh \
+    && mkdir build && cd build \
+    && ../configure --without-x --with-readline=no --enable-cider --enable-klu \
+        --enable-pss --enable-openmp --enable-osdi --enable-xspice --disable-adms --disable-debug \
+    && make -j2 -C src/xspice/cmpp \
+    && make -j2 -C src/xspice/icm
+
 FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute@sha256:beebd1f142f792e9767780a70cbc6c41c6c448e12fcda4504417404f1f118df3
 
 ARG KICAD_PACKAGE_VERSION=10.0.8~ubuntu26.04.1
@@ -32,11 +53,11 @@ RUN apt-get update \
         graphviz \
         imagemagick \
         inkscape \
-        libngspice0 \
+        libngspice0=45.2+ds-1 \
         librsvg2-bin \
         libxcb-cursor0 \
         mupdf-tools \
-        ngspice \
+        ngspice=45.2+ds-1 \
         openjdk-25-jre-headless \
         openscad \
         poppler-utils \
@@ -67,6 +88,14 @@ RUN apt-get update \
     && /opt/kicad-mcp/bin/pip check \
     && install -d /opt/freerouting \
     && chmod -R a+rX /opt/kicad-tools /opt/kicad-mcp /opt/freerouting
+
+COPY --from=ngspice-build /build/source/build/src/xspice/icm/xtradev/xtradev.cm /usr/lib/x86_64-linux-gnu/ngspice/xtradev.cm
+COPY ngspice_smoke.py /usr/local/share/kicad/ngspice_smoke.py
+RUN mkdir /opt/kicad-build/ngspice-probe \
+    && printf 'set ngbehavior=ps\n' > /opt/kicad-build/ngspice-probe/.spiceinit \
+    && cd /opt/kicad-build/ngspice-probe \
+    && /usr/bin/python3 /usr/local/share/kicad/ngspice_smoke.py \
+    && rm -rf /opt/kicad-build/ngspice-probe
 
 COPY --from=freerouting-build /build/upstream.jar /opt/freerouting/freerouting.jar
 COPY --from=freerouting-build /build/classes/ /opt/kicad-build/freerouting-classes/
