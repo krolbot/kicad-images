@@ -91,7 +91,7 @@ async def main():
                     page = await session.list_tools()
                     assert not page.model_dump(by_alias=True).get('nextCursor')
                     names = {t.name for t in page.tools}
-                    required = {'get_toolkit_status', 'manufacture_pcb', 'generate_interactive_bom', 'panelize_pcb', 'render_pcb', 'discover_replication', 'replicate_layout', 'place_footprints', 'place_parts', 'scan_project_dependencies', 'localize_project_dependencies', 'export_testpoints', 'generate_pinout', 'generate_pinout_image', 'generate_kibuzzard_footprint', 'apply_variant', 'solve_trace_impedance', 'run_prefab_gate', 'autoroute_pcb', 'run_drc', 'get_symbol_info'}
+                    required = {'get_toolkit_status', 'manufacture_pcb', 'generate_interactive_bom', 'panelize_pcb', 'render_pcb', 'discover_replication', 'replicate_layout', 'place_footprints', 'place_parts', 'scan_project_dependencies', 'localize_project_dependencies', 'export_testpoints', 'generate_pinout', 'generate_pinout_image', 'generate_kibuzzard_footprint', 'apply_variant', 'solve_trace_impedance', 'run_prefab_gate', 'get_board_edit_state', 'edit_board_copper_batch', 'autoroute_pcb', 'run_drc', 'get_symbol_info'}
                     assert required <= names, sorted(required - names)
                     status = await checked(session, 'get_toolkit_status', {})
                     assert status['kicad'] == os.environ['KICAD_VERSION'], status
