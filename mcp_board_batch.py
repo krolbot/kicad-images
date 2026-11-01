@@ -98,6 +98,26 @@ def _sha(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stage_project(source: Path, destination: Path) -> Path:
+    """Copy the complete source-project context around a temporary board."""
+    for entry in source.parent.iterdir():
+        if entry == destination or entry.name.startswith(".kicad-batch-"):
+            continue
+        target = destination / entry.name
+        if entry.is_symlink():
+            target.symlink_to(os.readlink(entry))
+        elif entry.is_dir():
+            shutil.copytree(entry, target, symlinks=True)
+        elif entry.is_file():
+            shutil.copy2(entry, target)
+        else:
+            raise ToolError(f"unsupported project entry: {entry}")
+    stage = destination / source.name
+    if stage.is_symlink() or not stage.is_file():
+        raise ToolError("staged board is not a regular file")
+    return stage
+
+
 def _worker(payload: dict, timeout: int = 180) -> dict:
     try:
         result = subprocess.run(
@@ -492,14 +512,7 @@ def edit_board_copper_batch(
 
     with tempfile.TemporaryDirectory(prefix=".kicad-batch-", dir=path.parent) as tmp_name:
         tmp = Path(tmp_name)
-        stage = tmp / path.name
-        with path.open("rb") as source, stage.open("xb") as target:
-            while chunk := source.read(1024 * 1024):
-                target.write(chunk)
-        for suffix in (".kicad_pro", ".kicad_dru"):
-            sidecar = path.with_suffix(suffix)
-            if sidecar.is_file() and not sidecar.is_symlink():
-                shutil.copyfile(sidecar, stage.with_suffix(suffix))
+        stage = _stage_project(path, tmp)
         stage_state = _worker(
             {
                 "action": "edit",
