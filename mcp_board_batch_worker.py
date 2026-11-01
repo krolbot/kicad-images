@@ -135,6 +135,16 @@ def _apply(board, request):
             raise ValueError(f"footprint not found: {reference}")
         fp = footprints[reference]
         fp.SetPosition(pcbnew.VECTOR2I_MM(_finite(move["x_mm"], "x_mm"), _finite(move["y_mm"], "y_mm")))
+        target_layer = move.get("layer")
+        if target_layer is not None:
+            if target_layer not in {"F.Cu", "B.Cu"}:
+                raise ValueError("footprint layer must be F.Cu or B.Cu")
+            if fp.GetLayerName() not in {"F.Cu", "B.Cu"}:
+                raise ValueError(f"footprint {reference} is not on F.Cu or B.Cu")
+            if fp.GetLayerName() != target_layer:
+                fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+                if fp.GetLayerName() != target_layer:
+                    raise RuntimeError(f"native flip did not move {reference} to {target_layer}")
         if move.get("rotation_deg") is not None:
             fp.SetOrientationDegrees(_finite(move["rotation_deg"], "rotation_deg"))
 
