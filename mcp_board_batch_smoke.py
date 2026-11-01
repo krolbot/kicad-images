@@ -117,6 +117,13 @@ async def main():
                 dry = await call(session, "edit_board_copper_batch", package)
                 assert dry["status"] == "dry_run_passed", dry
                 assert dry["source_unchanged"] and sha(PARITY_BOARD) == source_sha
+                await call(
+                    session,
+                    "edit_board_copper_batch",
+                    package | {"dry_run": False, "confirmation_token": "0" * 64},
+                    error=True,
+                )
+                assert sha(PARITY_BOARD) == source_sha
                 applied = await call(
                     session,
                     "edit_board_copper_batch",
@@ -364,6 +371,7 @@ async def main():
                         },
                         "negative": {
                             "bad_uuid": "rejected",
+                            "bad_confirmation_token": "rejected",
                             "sha_mismatch": "rejected",
                             "intentional_open": {"violations": opened["drc"]["violation_count"], "opens": opened["drc"]["unconnected_count"]},
                             "intentional_short": {"violations": shorted["drc"]["violation_count"], "opens": shorted["drc"]["unconnected_count"]},

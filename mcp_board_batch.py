@@ -195,6 +195,10 @@ def _pad_map(footprint: dict) -> dict[str, dict]:
     return {pad["number"]: pad for pad in footprint["pads"]}
 
 
+def _pads_by_uuid(footprint: dict) -> dict[str, dict]:
+    return {pad["uuid"]: pad for pad in footprint["pads"]}
+
+
 def _pad_identity(pad: dict) -> dict:
     return {key: value for key, value in pad.items() if key not in {"position_mm", "layers"}}
 
@@ -326,7 +330,7 @@ def _verify(
             failures.append(f"footprint position mismatch: {reference}")
         if spec.rotation_deg is not None and candidate["rotation_deg"] % 360 != round(spec.rotation_deg, 6) % 360:
             failures.append(f"footprint rotation mismatch: {reference}")
-        old_pads, new_pads = _pad_map(footprint), _pad_map(candidate)
+        old_pads, new_pads = _pads_by_uuid(footprint), _pads_by_uuid(candidate)
         flipping = expected_layer != footprint["layer"]
         if set(old_pads) != set(new_pads) or any(
             _pad_identity(old_pads[number]) != _pad_identity(new_pads[number])
