@@ -27,7 +27,16 @@ async def main():
                 await session.initialize()
                 tools = (await session.list_tools()).tools
                 names = {tool.name for tool in tools}
-                required = {"get_version", "get_symbol_info", "run_erc", "run_drc", "fill_zones", "autoroute_pcb"}
+                required = {
+                    "get_version",
+                    "get_symbol_info",
+                    "run_erc",
+                    "run_drc",
+                    "fill_zones",
+                    "autoroute_pcb",
+                    "get_board_edit_state",
+                    "edit_board_copper_batch",
+                }
                 assert required <= names, sorted(required - names)
                 result = await session.call_tool("get_version", {})
                 text = "\n".join(item.text for item in result.content if item.type == "text")

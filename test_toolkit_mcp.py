@@ -144,7 +144,8 @@ class ToolkitBoundaries(unittest.TestCase):
                  "discover_replication", "replicate_layout", "place_footprints", "place_parts",
                  "scan_project_dependencies", "localize_project_dependencies", "export_testpoints",
                  "generate_pinout", "generate_pinout_image", "generate_kibuzzard_footprint",
-                 "apply_variant", "solve_trace_impedance", "run_prefab_gate"}
+                 "apply_variant", "solve_trace_impedance", "run_prefab_gate",
+                 "get_board_edit_state", "edit_board_copper_batch"}
         self.assertEqual(set(actual) - original, added)
         self.assertEqual(toolkit.ADDON_COVERAGE["de.markh.kivar"]["status"], "full")
         self.assertEqual(toolkit.ADDON_COVERAGE["com.github.ozzysv.viafence"]["status"], "blocked")
