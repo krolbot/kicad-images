@@ -26,6 +26,7 @@ for lib,name,ref,value,x in [('Resistor_SMD','R_0603_1608Metric','R1','10k',6),(
  fp=pcbnew.FootprintLoad('/usr/share/kicad/footprints/'+lib+'.pretty',name)
  assert fp is not None
  fp.SetFPID(pcbnew.LIB_ID(lib,name));fp.SetReference(ref);fp.SetValue(value)
+ if ref=='R1': fp.SetField('Var','Power low(10k) high(22k)')
  fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x),pcbnew.FromMM(10)))
  path=pcbnew.KIID_PATH();path.push_back(pcbnew.KIID('11111111-1111-4111-8111-111111111111'));path.push_back(pcbnew.KIID())
  fp.SetPath(path);fp.SetSheetfile('manufacturing.kicad_sch');fp.SetSheetname('Root');board.Add(fp)
@@ -90,7 +91,7 @@ async def main():
                     page = await session.list_tools()
                     assert not page.model_dump(by_alias=True).get('nextCursor')
                     names = {t.name for t in page.tools}
-                    required = {'get_toolkit_status', 'manufacture_pcb', 'generate_interactive_bom', 'panelize_pcb', 'discover_replication', 'replicate_layout', 'place_footprints', 'place_parts', 'scan_project_dependencies', 'localize_project_dependencies', 'autoroute_pcb', 'run_drc', 'get_symbol_info'}
+                    required = {'get_toolkit_status', 'manufacture_pcb', 'generate_interactive_bom', 'panelize_pcb', 'render_pcb', 'discover_replication', 'replicate_layout', 'place_footprints', 'place_parts', 'scan_project_dependencies', 'localize_project_dependencies', 'export_testpoints', 'generate_pinout', 'generate_pinout_image', 'generate_kibuzzard_footprint', 'apply_variant', 'solve_trace_impedance', 'run_prefab_gate', 'autoroute_pcb', 'run_drc', 'get_symbol_info'}
                     assert required <= names, sorted(required - names)
                     status = await checked(session, 'get_toolkit_status', {})
                     assert status['kicad'] == os.environ['KICAD_VERSION'], status
@@ -105,10 +106,46 @@ async def main():
                     panels = [p for p in artifacts(panel) if p.suffix == '.kicad_pcb']
                     assert len(panels) == 1
                     subprocess.run(['/opt/kicad-tools/bin/python', '-c', 'import pcbnew,sys;b=pcbnew.LoadBoard(sys.argv[1]);assert len(list(b.GetFootprints()))==6', str(panels[0])], check=True)
+                    drawing = await checked(session, 'render_pcb', {'pcb_path': str(board),
+                        'output_dir': str(root / 'drawing'), 'mode': 'stylized', 'format': 'svg'})
+                    drawing_svg = next(p for p in artifacts(drawing) if p.suffix == '.svg')
+                    assert '<svg' in drawing_svg.read_text()
                     duplicate = await session.call_tool('generate_interactive_bom', {'pcb_path': str(board), 'output_dir': str(root / 'assembly')})
                     assert duplicate.is_error, 'Existing output must be rejected through real MCP'
                     invalid = await session.call_tool('panelize_pcb', {'pcb_path': str(board), 'output_dir': str(root / 'invalid'), 'rows': 0})
                     assert invalid.is_error and not (root / 'invalid').exists()
+                    testpoints = await checked(session, 'export_testpoints', {'pcb_path': str(board),
+                        'output_dir': str(root / 'testpoints'), 'pads': [{'reference': 'R1', 'pad': '1'}]})
+                    testpoint_csv = next(p for p in artifacts(testpoints) if p.suffix == '.csv')
+                    assert 'source ref des' in testpoint_csv.read_text() and 'R1' in testpoint_csv.read_text()
+                    pinout = await checked(session, 'generate_pinout', {'pcb_path': str(board),
+                        'output_dir': str(root / 'pinout'), 'references': ['R1'], 'format': 'markdown'})
+                    pinout_md = next(p for p in artifacts(pinout) if p.suffix == '.md')
+                    assert 'Pinout for R1' in pinout_md.read_text()
+                    pinout_image = await checked(session, 'generate_pinout_image', {'pcb_path': str(board),
+                        'output_dir': str(root / 'pinout-image'), 'references': ['R1'], 'png_dpi': 96})
+                    pinout_image_files = artifacts(pinout_image)
+                    assert {p.suffix for p in pinout_image_files} >= {'.svg', '.png'}
+                    buzzard = await checked(session, 'generate_kibuzzard_footprint', {
+                        'output_dir': str(root / 'kibuzzard'), 'text': 'MCP', 'height_mm': 2,
+                        'layer': 'F.SilkS', 'left_cap': 'square', 'right_cap': 'square'})
+                    buzzard_mod = next(p for p in artifacts(buzzard) if p.suffix == '.kicad_mod')
+                    assert '(footprint' in buzzard_mod.read_text()
+                    variant = await checked(session, 'apply_variant', {'pcb_path': str(board),
+                        'output_dir': str(root / 'variant'), 'choices': {'Power': 'high'}})
+                    variant_board = next(p for p in artifacts(variant) if p.suffix == '.kicad_pcb')
+                    value = subprocess.check_output(['/opt/kicad-tools/bin/python', '-c',
+                        "import pcbnew,sys;print(pcbnew.LoadBoard(sys.argv[1]).FindFootprintByReference('R1').GetValue())",
+                        str(variant_board)], text=True).strip()
+                    assert value == '22k', value
+                    impedance = await checked(session, 'solve_trace_impedance', {'kind': 'microstrip',
+                        'width_mm': .3, 'copper_thickness_um': 35, 'dielectric_height_mm': .2,
+                        'dielectric_er': 4.2, 'quality': 'schnell'})
+                    assert impedance['converged'] and 40 < impedance['z0_ohms'] < 70, impedance
+                    gate = await checked(session, 'run_prefab_gate', {'pcb_path': str(board),
+                        'output_dir': str(root / 'prefab-gate'), 'no_ampacity': True, 'no_parity': True})
+                    assert gate['operation']['passed'] is True, gate
+                    assert next(p for p in artifacts(gate) if p.name == 'prefab-gate.json')
                     for kind, layout in {
                         'linear': {'kind': 'linear', 'step_x_mm': 5, 'step_y_mm': 0},
                         'matrix': {'kind': 'matrix', 'step_x_mm': 5, 'step_y_mm': 3, 'columns': 2},
@@ -165,11 +202,18 @@ async def main():
                     assert rep_board.read_bytes() == rep_before
                     subprocess.run(['kicad-cli', 'pcb', 'drc', '--format', 'json', '-o', str(root / 'native-drc.json'), str(board)], check=True)
                     report = json.loads((root / 'native-drc.json').read_text())
-                    assert not report['violations'] and not report['unconnected_items'], report
+                    drc_errors = [row for row in report['violations'] if row['severity'] == 'error']
+                    drc_warnings = [row for row in report['violations'] if row['severity'] == 'warning']
+                    assert not drc_errors and not report['unconnected_items'], report
                     assert hashlib.sha256(board.read_bytes()).hexdigest() == before
                     print(json.dumps({'kicad': status['kicad'], 'mcp_tools': len(names), 'manufacturing_files': len(fab),
-                                      'ibom': True, 'panel_footprints': 6, 'native_placement_modes': 3, 'parts_placer': True,
-                                      'localization_archive': True, 'replication_sections': 3, 'native_drc_clean': True, 'source_unchanged': True,
+                                      'ibom': True, 'panel_footprints': 6, 'pcbdraw': True,
+                                      'native_placement_modes': 3, 'parts_placer': True,
+                                      'localization_archive': True, 'replication_sections': 3, 'testpoints': True,
+                                      'pinout': True, 'pinout_image': True, 'kibuzzard': True,
+                                      'variant': True, 'impedance': True, 'prefab_gate': True,
+                                      'native_drc_errors': 0, 'native_drc_warnings': len(drc_warnings),
+                                      'source_unchanged': True,
                                       'existing_output_rejected': True, 'invalid_request_rejected': True}))
 
 

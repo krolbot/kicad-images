@@ -73,6 +73,20 @@ class ToolkitNativeValidationTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertIn("Unknown operation", response["error"]["message"])
 
+    def test_new_addon_boundaries_reject_bad_requests_before_engine_use(self):
+        existing = self.root / "report.csv"
+        existing.write_text("keep")
+        with patch.object(toolkit_native, "_load_pcbnew") as load_pcbnew:
+            with self.assertRaisesRegex(toolkit_native.NativeError, "already exists"):
+                toolkit_native.testpoints_export({
+                    "input_pcb": str(self.input_pcb), "output_file": str(existing),
+                })
+            load_pcbnew.assert_not_called()
+        with patch.object(toolkit_native, "_load_plugin") as load_plugin:
+            with self.assertRaisesRegex(toolkit_native.NativeError, "kind must"):
+                toolkit_native.impedance_solve({"kind": "coax"})
+            load_plugin.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

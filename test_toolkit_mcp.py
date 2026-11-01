@@ -105,6 +105,20 @@ class ToolkitBoundaries(unittest.TestCase):
                 toolkit.place_parts(str(self.board), str(output), [toolkit.PartPlacement(ref="R1", x_mm=0, y_mm=0)])
         self.assertFalse(output.exists())
 
+    def test_native_board_preserves_project_library_tables(self):
+        (self.project / "fp-lib-table").write_text("(fp_lib_table)")
+        (self.project / "sym-lib-table").write_text("(sym_lib_table)")
+        output = self.root / "variant"
+
+        def native(_, __, **parameters):
+            Path(parameters["output_pcb"]).write_text("(kicad_pcb)")
+            return {"output_pcb": parameters["output_pcb"]}
+
+        with patch.object(toolkit, "_native", side_effect=native):
+            toolkit._native_board("variant_apply", str(self.board), str(output), choices={"Power": "high"})
+        self.assertEqual((output / "fp-lib-table").read_text(), "(fp_lib_table)")
+        self.assertEqual((output / "sym-lib-table").read_text(), "(sym_lib_table)")
+
     def test_timeout_stops_the_process_group(self):
         pidfile = self.root / "child.pid"
         script = ("import subprocess,sys,time,pathlib;"
@@ -126,10 +140,24 @@ class ToolkitBoundaries(unittest.TestCase):
                        toolkit.upstream.footprint, toolkit.upstream.project]:
             original.update(t.name for t in asyncio.run(module.mcp.list_tools()))
         self.assertTrue(original <= actual.keys())
-        added = {"get_toolkit_status", "manufacture_pcb", "generate_interactive_bom", "panelize_pcb",
+        added = {"get_toolkit_status", "manufacture_pcb", "generate_interactive_bom", "panelize_pcb", "render_pcb",
                  "discover_replication", "replicate_layout", "place_footprints", "place_parts",
-                 "scan_project_dependencies", "localize_project_dependencies"}
+                 "scan_project_dependencies", "localize_project_dependencies", "export_testpoints",
+                 "generate_pinout", "generate_pinout_image", "generate_kibuzzard_footprint",
+                 "apply_variant", "solve_trace_impedance", "run_prefab_gate"}
         self.assertEqual(set(actual) - original, added)
+        self.assertEqual(toolkit.ADDON_COVERAGE["de.markh.kivar"]["status"], "full")
+        self.assertEqual(toolkit.ADDON_COVERAGE["com.github.ozzysv.viafence"]["status"], "blocked")
+        self.assertEqual(toolkit.ENGINE_COVERAGE["PcbDraw"]["tools"], ["render_pcb"])
+        for coverage in [toolkit.ADDON_COVERAGE, toolkit.ENGINE_COVERAGE]:
+            for package, row in coverage.items():
+                with self.subTest(package=package):
+                    assert isinstance(row, dict)
+                    tools = row["tools"]
+                    assert isinstance(tools, list)
+                    for tool in tools:
+                        assert isinstance(tool, str)
+                        self.assertIn(tool, actual)
         for name in added:
             self.assertIsNotNone(actual[name].annotations)
         self.assertIn("layout", actual["place_footprints"].input_schema["required"])
@@ -142,6 +170,10 @@ class ToolkitBoundaries(unittest.TestCase):
             self.assertIn("pcb_path", schema["required"])
             self.assertIn("output_dir", schema["required"])
         self.assertEqual(actual["panelize_pcb"].input_schema["properties"]["rows"]["minimum"], 1)
+        impedance_annotations = actual["solve_trace_impedance"].annotations
+        assert impedance_annotations is not None
+        self.assertTrue(impedance_annotations.read_only_hint)
+        self.assertIn("choices", actual["apply_variant"].input_schema["required"])
 
 
 if __name__ == "__main__":
