@@ -9,6 +9,32 @@ import mcp_board_batch as batch
 
 
 class AtomicBoardWriteTests(unittest.TestCase):
+    def test_stage_project_preserves_local_libraries_without_linking_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
+            board = project / "board.kicad_pcb"
+            board.write_bytes(b"canonical board")
+            (project / "board.kicad_pro").write_text("project rules")
+            (project / "fp-lib-table").write_text("project footprint table")
+            pretty = project / "Local.pretty"
+            pretty.mkdir()
+            (pretty / "Local.kicad_mod").write_text("footprint")
+            models = project / "3dmodels"
+            models.mkdir()
+            (models / "Local.step").write_text("model")
+            destination = project / ".kicad-batch-test"
+            destination.mkdir()
+
+            stage = batch._stage_project(board, destination)
+
+            self.assertEqual(stage.read_bytes(), board.read_bytes())
+            self.assertEqual((destination / "fp-lib-table").read_text(), "project footprint table")
+            self.assertEqual((destination / "Local.pretty" / "Local.kicad_mod").read_text(), "footprint")
+            self.assertEqual((destination / "3dmodels" / "Local.step").read_text(), "model")
+            stage.write_bytes(b"candidate")
+            self.assertEqual(board.read_bytes(), b"canonical board")
+
     def test_exchange_replaces_expected_board_and_retains_old_entry(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "board.kicad_pcb"
