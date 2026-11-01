@@ -64,8 +64,8 @@ ADDON_COVERAGE: dict[str, JsonValue] = {
 }
 
 ENGINE_COVERAGE: dict[str, JsonValue] = {
-    "KiBot": {"status": "partial", "tools": ["manufacture_pcb"], "remaining": "fixed safe production outputs only; uploaded KiBot scripts/config are intentionally forbidden"},
-    "KiKit": {"status": "partial", "tools": ["panelize_pcb"], "remaining": "fixed grid panel; present/separate/stencil are not published"},
+    "KiBot": {"status": "partial", "tools": ["manufacture_pcb"], "operations": "nine structured fabrication, documentation and exchange outputs", "remaining": "uploaded configs, hooks and specialized outputs are intentionally not published"},
+    "KiKit": {"status": "partial", "tools": ["panelize_pcb"], "operations": "structured grid spacing, rotation, alternation, tabs, cuts, rails and frames", "remaining": "present, separate and stencil need separate typed contracts and are not published"},
     "PcbDraw": {"status": "full", "tools": ["render_pcb"], "operations": "stylized SVG/PNG and 3D PNG"},
     "KiAuto": {"status": "internal", "tools": ["manufacture_pcb"], "operations": "KiBot internal automation, no separate installed command"},
     "KiDiff": {"status": "internal", "tools": ["manufacture_pcb"], "operations": "KiBot internal diff support, no separate installed command"},
@@ -191,23 +191,37 @@ def get_toolkit_status() -> dict[str, JsonValue]:
 
 @mcp.tool(annotations=_EXPORT)
 def manufacture_pcb(pcb_path: str, output_dir: str,
-                    outputs: list[Literal["gerber", "drill", "positions", "pdf"]] | None = None) -> dict[str, JsonValue]:
+                    outputs: list[Literal["gerber", "drill", "positions", "pdf", "bom",
+                                          "netlist_ipc", "ipc2581", "step", "svg"]] | None = None) -> dict[str, JsonValue]:
     """Generate production files with KiBot, without changing the source board/project.
 
-    outputs selects Gerber, Excellon drill, CSV placement and per-layer PDF; defaults to all four.
+    outputs selects Gerber, drill, placement, PDF, BOM, IPC-D-356, IPC-2581, STEP and SVG;
+    the backward-compatible default remains Gerber, drill, placement and PDF.
     Uses fixed local output definitions, no uploaded configuration, hooks or supplier network requests.
     output_dir must not exist. Run native ERC/DRC separately before manufacturing a real board.
     """
     selected = ["gerber", "drill", "positions", "pdf"] if outputs is None else outputs
-    if not selected or len(selected) != len(set(selected)) or not set(selected) <= {"gerber", "drill", "positions", "pdf"}:
+    supported = {"gerber", "drill", "positions", "pdf", "bom", "netlist_ipc", "ipc2581", "step", "svg"}
+    if not selected or len(selected) != len(set(selected)) or not set(selected) <= supported:
         raise ToolError("Select one or more distinct supported output types")
     definitions = {
         "gerber": {"name": "gerbers", "type": "gerber", "dir": "gerber", "layers": LAYERS},
         "drill": {"name": "drills", "type": "excellon", "dir": "drill"},
         "positions": {"name": "assembly_positions", "type": "position", "dir": "assembly", "options": {"format": "CSV", "units": "millimeters"}},
         "pdf": {"name": "layer_pdf", "type": "pdf", "dir": "pdf", "layers": ["F.Cu", "B.Cu", "F.Silkscreen", "Edge.Cuts"]},
+        "bom": {"name": "bom", "type": "bom", "dir": "bom", "options": {"format": "CSV", "output": "%f-bom.%x"}},
+        "netlist_ipc": {"name": "ipc_d356", "type": "netlist", "dir": "netlist", "options": {"format": "ipc", "output": "%f.%x"}},
+        "ipc2581": {"name": "ipc2581", "type": "ipc2581", "dir": "ipc2581", "options": {"compress": True, "output": "%f-ipc2581.%x"}},
+        "step": {"name": "step", "type": "step", "dir": "3d", "options": {"output": "%f.%x"}},
+        "svg": {"name": "svg", "type": "svg", "dir": "svg", "layers": LAYERS, "options": {"output": "%f-%i.%x"}},
     }
+    source = _path(pcb_path, ".kicad_pcb")
+    schematics = _schematics(source)
     with _job(pcb_path, output_dir) as (board, destination, work):
+        for path in schematics:
+            target = work / path.relative_to(source.parent)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
         config = work / "fabrication.kibot.yaml"
         config.write_text(json.dumps({"kibot": {"version": 1}, "outputs": [definitions[key] for key in selected]}))
         _execute(["kibot", "-A", "-b", str(board), "-c", str(config), "-d", str(destination)], work, timeout=600)
@@ -245,21 +259,51 @@ def panelize_pcb(pcb_path: str, output_dir: str,
                  columns: Annotated[int, Field(ge=1, le=20)] = 2,
                  spacing_mm: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] = 3,
                  tab_width_mm: Annotated[float, Field(gt=0, le=50, allow_inf_nan=False)] = 3,
-                 cuts: Literal["none", "vcuts", "mousebites"] = "none") -> dict[str, JsonValue]:
-    """Create a KiKit grid panel with fixed connecting tabs in a NEW output directory.
+                 cuts: Literal["none", "vcuts", "mousebites"] = "none",
+                 horizontal_spacing_mm: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] | None = None,
+                 vertical_spacing_mm: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] | None = None,
+                 rotation_deg: Annotated[float, Field(ge=-360, le=360, allow_inf_nan=False)] = 0,
+                 alternation: Literal["none", "rows", "cols", "rowsCols"] = "none",
+                 tab_style: Literal["none", "fixed", "full"] = "fixed",
+                 horizontal_tab_count: Annotated[int, Field(ge=0, le=20)] = 1,
+                 vertical_tab_count: Annotated[int, Field(ge=0, le=20)] = 1,
+                 framing: Literal["none", "railstb", "railslr", "frame", "tightframe"] = "none",
+                 frame_width_mm: Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)] = 5,
+                 frame_spacing_mm: Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)] = 2,
+                 mousebite_drill_mm: Annotated[float, Field(gt=0, le=10, allow_inf_nan=False)] = 0.5,
+                 mousebite_spacing_mm: Annotated[float, Field(gt=0, le=10, allow_inf_nan=False)] = 1) -> dict[str, JsonValue]:
+    """Create a structured KiKit grid panel in a NEW output directory.
 
+    Supports independent spacing, rotation/alternation, fixed/full/no tabs, V-cuts/mousebites
+    and rails/frames without accepting executable KiKit plugins or uploaded presets.
     rows*columns is bounded to 100 boards. The original PCB is never rewritten.
     Inspect native DRC and fabrication constraints on the resulting panel before release.
     """
     if isinstance(rows, bool) or isinstance(columns, bool) or not 1 <= rows <= 20 or not 1 <= columns <= 20 or rows * columns > 100:
         raise ToolError("Use 1..20 rows/columns and at most 100 board instances")
-    if not math.isfinite(spacing_mm) or not 0 <= spacing_mm <= 100 or not math.isfinite(tab_width_mm) or not 0 < tab_width_mm <= 50:
+    hspace = spacing_mm if horizontal_spacing_mm is None else horizontal_spacing_mm
+    vspace = spacing_mm if vertical_spacing_mm is None else vertical_spacing_mm
+    finite = [spacing_mm, hspace, vspace, tab_width_mm, rotation_deg, frame_width_mm,
+              frame_spacing_mm, mousebite_drill_mm, mousebite_spacing_mm]
+    if not all(math.isfinite(value) for value in finite) or not 0 <= hspace <= 100 or not 0 <= vspace <= 100 or not 0 < tab_width_mm <= 50:
         raise ToolError("Use finite spacing 0..100mm and tab width >0..50mm")
     if cuts not in {"none", "vcuts", "mousebites"}:
         raise ToolError("Unsupported cut type")
+    layout = (f"grid; rows: {rows}; cols: {columns}; hspace: {hspace}mm; vspace: {vspace}mm; "
+              f"rotation: {rotation_deg}deg; alternation: {alternation}")
+    tabs = tab_style
+    if tab_style == "fixed":
+        tabs += (f"; hwidth: {tab_width_mm}mm; vwidth: {tab_width_mm}mm; "
+                 f"hcount: {horizontal_tab_count}; vcount: {vertical_tab_count}")
+    cuts_section = cuts
+    if cuts == "mousebites":
+        cuts_section += f"; drill: {mousebite_drill_mm}mm; spacing: {mousebite_spacing_mm}mm"
+    framing_section = framing
+    if framing != "none":
+        framing_section += f"; width: {frame_width_mm}mm; space: {frame_spacing_mm}mm"
     with _job(pcb_path, output_dir) as (board, destination, work):
-        _execute(["kikit", "panelize", "--layout", f"grid; rows: {rows}; cols: {columns}; space: {spacing_mm}mm",
-                  "--tabs", f"fixed; width: {tab_width_mm}mm; vcount: 1; hcount: 1", "--cuts", cuts,
+        _execute(["kikit", "panelize", "--layout", layout, "--tabs", tabs,
+                  "--cuts", cuts_section, "--framing", framing_section,
                   str(board), str(destination / "panel.kicad_pcb")], work, timeout=600)
     return _result(destination)
 

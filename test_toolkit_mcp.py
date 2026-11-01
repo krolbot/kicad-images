@@ -171,6 +171,11 @@ class ToolkitBoundaries(unittest.TestCase):
             self.assertIn("pcb_path", schema["required"])
             self.assertIn("output_dir", schema["required"])
         self.assertEqual(actual["panelize_pcb"].input_schema["properties"]["rows"]["minimum"], 1)
+        panel_properties = actual["panelize_pcb"].input_schema["properties"]
+        self.assertEqual(panel_properties["alternation"]["enum"], ["none", "rows", "cols", "rowsCols"])
+        self.assertEqual(panel_properties["framing"]["enum"], ["none", "railstb", "railslr", "frame", "tightframe"])
+        output_items = actual["manufacture_pcb"].input_schema["properties"]["outputs"]["anyOf"][0]["items"]["enum"]
+        self.assertTrue({"bom", "netlist_ipc", "ipc2581", "step", "svg"} <= set(output_items))
         impedance_annotations = actual["solve_trace_impedance"].annotations
         assert impedance_annotations is not None
         self.assertTrue(impedance_annotations.read_only_hint)

@@ -99,10 +99,24 @@ async def main():
                     fab = artifacts(manufacturing)
                     for suffix in ['.gbr', '.drl', '.csv', '.pdf']:
                         assert any(p.suffix == suffix and p.stat().st_size for p in fab), suffix
+                    demo = root / 'demo-source'
+                    shutil.copytree('/usr/share/kicad/template/Arduino_Micro', demo)
+                    demo_board = next(demo.glob('*.kicad_pcb'))
+                    extended = await checked(session, 'manufacture_pcb', {'pcb_path': str(demo_board),
+                        'output_dir': str(root / 'extended-fabrication'),
+                        'outputs': ['bom', 'netlist_ipc', 'ipc2581', 'step', 'svg']})
+                    extended_suffixes = {p.suffix.lower() for p in artifacts(extended)}
+                    assert {'.csv', '.d356', '.zip', '.step', '.svg'} <= extended_suffixes, extended_suffixes
                     bom = await checked(session, 'generate_interactive_bom', {'pcb_path': str(board), 'output_dir': str(root / 'assembly')})
                     html = [p for p in artifacts(bom) if p.suffix == '.html']
                     assert len(html) == 1 and 'pcbdata' in html[0].read_text()
-                    panel = await checked(session, 'panelize_pcb', {'pcb_path': str(board), 'output_dir': str(root / 'panel'), 'rows': 1, 'columns': 2})
+                    panel = await checked(session, 'panelize_pcb', {'pcb_path': str(board),
+                        'output_dir': str(root / 'panel'), 'rows': 1, 'columns': 2,
+                        'horizontal_spacing_mm': 4, 'vertical_spacing_mm': 2,
+                        'rotation_deg': 180, 'alternation': 'rows',
+                        'horizontal_tab_count': 2, 'vertical_tab_count': 1,
+                        'cuts': 'vcuts', 'framing': 'railstb',
+                        'frame_width_mm': 5, 'frame_spacing_mm': 2})
                     panels = [p for p in artifacts(panel) if p.suffix == '.kicad_pcb']
                     assert len(panels) == 1
                     subprocess.run(['/opt/kicad-tools/bin/python', '-c', 'import pcbnew,sys;b=pcbnew.LoadBoard(sys.argv[1]);assert len(list(b.GetFootprints()))==6', str(panels[0])], check=True)
@@ -207,6 +221,7 @@ async def main():
                     assert not drc_errors and not report['unconnected_items'], report
                     assert hashlib.sha256(board.read_bytes()).hexdigest() == before
                     print(json.dumps({'kicad': status['kicad'], 'mcp_tools': len(names), 'manufacturing_files': len(fab),
+                                      'extended_manufacturing': sorted(extended_suffixes),
                                       'ibom': True, 'panel_footprints': 6, 'pcbdraw': True,
                                       'native_placement_modes': 3, 'parts_placer': True,
                                       'localization_archive': True, 'replication_sections': 3, 'testpoints': True,
