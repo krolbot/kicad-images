@@ -1313,6 +1313,7 @@ def rf_tools_apply(request: dict[str, Any]) -> dict[str, Any]:
         net = next((value for name, value in board.GetNetsByName().items() if str(name) == net_name), None)
         if net is None:
             _fail(f"Net not found: {net_name}")
+        engine.viaNetId = net.GetNetCode()
         path_list = [[[item.GetStart().x, item.GetStart().y], [item.GetEnd().x, item.GetEnd().y]]
                      for item in tracks if isinstance(item, pcbnew.PCB_TRACK)]
         points = geometry.generateViaFence(path_list, engine.viaOffset, engine.viaPitch)
