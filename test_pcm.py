@@ -191,7 +191,7 @@ class SourceContractTests(unittest.TestCase):
         for directory in ["/config/.config/kicad", "/config/.cache", "/config/.local/share/kicad"]:
             self.assertIn(f'"{directory}"', recipe)
         requirements = (root / "requirements-tools.txt").read_text().splitlines()
-        expected = {"kikit", "pcbdraw", "skidl", "wireviz", "kicost", "kibot", "kiauto", "kidiff", "kibom", "setuptools"}
+        expected = {"kikit", "pcbdraw", "skidl", "wireviz", "kicost", "kibot", "kiauto", "kidiff", "kibom", "pyclipper", "setuptools"}
         self.assertEqual({line.split("==")[0] for line in requirements if line and not line.startswith("#")}, expected)
         self.assertTrue(all(re.fullmatch(r"[a-z0-9_-]+==[0-9.]+", line)
                             for line in requirements if line and not line.startswith("#")))

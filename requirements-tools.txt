@@ -8,5 +8,6 @@ kibot==1.9.1
 kiauto==2.3.10
 kidiff==2.6.0
 kibom==1.9.1
+pyclipper==1.4.0
 # KiCost GUI still imports distutils.version; keep the setuptools compatibility layer.
 setuptools==81.0.0

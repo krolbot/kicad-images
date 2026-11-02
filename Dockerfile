@@ -130,7 +130,7 @@ ADD --checksum=sha256:e8a308874ba94cd1cf43a580f7436a3b0de7bbd08502118472283a1d57
 ADD --checksum=sha256:ca46e7bc98e93d7885cf572651bcf20d28fc4219805e77527ac1adaa1eb756de https://raw.githubusercontent.com/MitjaNemec/ReplicateLayout/52fb33c26e79a2b5e0735dd96e7a2c00f1b5ea66/replicate_layout_test_project/replicate_layout_test_project.kicad_pro /opt/kicad-build/replication-fixture/replicate_layout_test_project.kicad_pro
 ADD --checksum=sha256:bd067cbf8b4726d726ee0c8beb484eac44a0cda514b46385ee6b100dea58fa08 https://raw.githubusercontent.com/MitjaNemec/ReplicateLayout/52fb33c26e79a2b5e0735dd96e7a2c00f1b5ea66/replicate_layout_test_project/replicate_layout_test_project.kicad_sch /opt/kicad-build/replication-fixture/replicate_layout_test_project.kicad_sch
 ADD --checksum=sha256:7a6ecfc7da6127b914e1b779b3ffac5479fde66e992ed1c55cfa7774f9ae4243 https://raw.githubusercontent.com/MitjaNemec/ReplicateLayout/52fb33c26e79a2b5e0735dd96e7a2c00f1b5ea66/test_helpers.py /opt/kicad-build/replication-fixture/test_helpers.py
-COPY mcp_smoke.py mcp_autoroute_smoke.py mcp_board_batch.py mcp_board_batch_worker.py mcp_board_batch_fixture.py mcp_board_batch_smoke.py toolkit_mcp.py toolkit_native.py mcp_toolkit_smoke.py native_ipc_smoke.py /usr/local/share/kicad/
+COPY mcp_smoke.py mcp_autoroute_smoke.py mcp_board_batch.py mcp_board_batch_worker.py mcp_board_batch_fixture.py mcp_board_batch_smoke.py toolkit_mcp.py toolkit_native.py toolkit_ipc.py mcp_toolkit_smoke.py addon_operations_smoke.py native_ipc_smoke.py /usr/local/share/kicad/
 COPY root/ /
 RUN chmod 0755 /usr/local/bin/kicad-mcp /usr/local/bin/freerouting /usr/local/bin/ibom /custom-cont-init.d/50-kicad-toolkit.sh \
     && chmod -R a+rX /opt/kicad-build/replication-fixture \
@@ -139,6 +139,8 @@ RUN chmod 0755 /usr/local/bin/kicad-mcp /usr/local/bin/freerouting /usr/local/bi
 ENV PATH="/opt/kicad-tools/bin:/opt/kicad-mcp/bin:${PATH}" \
     PYTHONPATH="/opt/kicad-tools/site-packages" \
     KICAD_VERSION=10.0.8 \
+    KICAD10_SYMBOL_DIR=/usr/share/kicad/symbols \
+    KICAD10_FOOTPRINT_DIR=/usr/share/kicad/footprints \
     KICAD_DOCUMENTS_HOME=/config/.local/share \
     KICAD_PYTHON=/usr/bin/python3 \
     FREEROUTING_JAR=/opt/freerouting/freerouting.jar
@@ -157,6 +159,9 @@ RUN install -d -o abc -g abc /projects /opt/kicad-build/probe-home \
     && /command/s6-setuidgid abc env -u PYTHONPATH BATCH_FIXTURE=/projects/board-batch-smoke/fixture.kicad_pcb xvfb-run -a -e /dev/stderr /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_board_batch_smoke.py \
     && rm -rf /projects/board-batch-smoke \
     && /command/s6-setuidgid abc env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_toolkit_smoke.py \
+    && /command/s6-setuidgid abc env -u PYTHONPATH timeout 1200s xvfb-run -a -e /dev/stderr /opt/kicad-mcp/bin/python /usr/local/share/kicad/addon_operations_smoke.py \
+    && rm -rf /projects/addon-canary /tmp/org.kicad.kicad /tmp/kicad /tmp/.X11-unix \
+    && install -d -m 1777 -o root -g root /tmp/.X11-unix \
     && rm -rf /opt/kicad-build/probe-home \
     && /usr/bin/python3 -c 'from pathlib import Path; import shutil; paths=list(map(Path, ["/config/.config/kicad", "/config/.cache", "/config/.local/share/kicad"])); assert not any(p.is_symlink() for p in paths); [shutil.rmtree(p) for p in paths if p.exists()]'
 

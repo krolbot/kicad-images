@@ -47,6 +47,10 @@ PLUGIN_DIRS = {
     "pinout": "com_github_cgrassin_kicad-pinout-generator",
     "pinout_image": "com_github_lou270_pinout-image-generator",
     "kibuzzard": "com_github_gregdavill_KiBuzzard",
+    "kinotes": "com_pcbtools_kinotes",
+    "action_tools": "com_github_easyw_kicad-action-tools",
+    "rf_tools": "com_github_easyw_kicad-rf-tools",
+    "viafence": "com_github_ozzysv_viafence",
     "kivar": "de_markh_kivar",
     "prefab_gate": "com_github_danielboston38_prefab-gate",
     "z0": "com_gitlab_egloff-studio_z0-field-solver/z0solver",
@@ -130,10 +134,18 @@ def _load_plugin(kind: str, module_name: str):
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory))
     sys.modules.pop(module_name, None)
+    pcbnew = sys.modules.get("pcbnew")
+    action_plugin = getattr(pcbnew, "ActionPlugin", None)
+    register = getattr(action_plugin, "register", None)
+    if register is not None:
+        action_plugin.register = lambda self: None
     try:
         return importlib.import_module(module_name)
     except Exception as exc:  # pragma: no cover - depends on KiCad's runtime ABI
         _fail(f"Cannot import pinned {kind} engine: {exc}")
+    finally:
+        if register is not None:
+            action_plugin.register = register
 
 
 def _load_package_plugin(kind: str, module_name: str):
@@ -196,6 +208,47 @@ def _save_board(pcbnew, board, output: Path) -> None:
     pcbnew.SaveBoard(str(output), board)
     if not output.is_file() or output.stat().st_size == 0:
         _fail(f"KiCad did not create output_pcb: {output}")
+
+
+def _item_uuid(item: Any) -> str:
+    value = getattr(item, "m_Uuid", None)
+    if value is None and callable(getattr(item, "GetUuid", None)):
+        value = item.GetUuid()
+    formatter = getattr(value, "AsString", None)
+    if callable(formatter):
+        return formatter()
+    return str(value)
+
+
+def _set_selected(item: Any, selected: bool) -> None:
+    method = getattr(item, "SetSelected" if selected else "ClearSelected", None)
+    if not callable(method):
+        _fail(f"Installed KiCad bindings cannot {'select' if selected else 'deselect'} board items")
+    try:
+        method()
+    except TypeError:
+        method(selected)
+
+
+def _clear_selection(board: Any) -> None:
+    for collection in (board.GetFootprints(), board.GetTracks(), board.GetDrawings(), board.GetPads()):
+        for item in collection:
+            if item.IsSelected():
+                _set_selected(item, False)
+
+
+def _select_uuids(items: Any, requested: Any, name: str) -> list[Any]:
+    if not isinstance(requested, list) or not requested:
+        _fail(f"{name} must be a non-empty array")
+    values = [_string(value, f"{name}[]") for value in requested]
+    by_uuid = {_item_uuid(item): item for item in items}
+    missing = sorted(set(values) - set(by_uuid))
+    if missing:
+        _fail(f"{name} are not on input_pcb: {', '.join(missing)}")
+    selected = [by_uuid[value] for value in values]
+    for item in selected:
+        _set_selected(item, True)
+    return selected
 
 
 def _assert_file_unchanged(path: Path, before: bytes) -> None:
@@ -934,6 +987,362 @@ def kibuzzard_generate(request: dict[str, Any]) -> dict[str, Any]:
             "alignment": alignment, "left_cap": left, "right_cap": right}
 
 
+def kibuzzard_insert(request: dict[str, Any]) -> dict[str, Any]:
+    input_pcb = _input_pcb(request.get("input_pcb"))
+    output_pcb = _output_pcb(request.get("output_pcb"), input_pcb)
+    reference = _string(request.get("reference"), "reference")
+    x_mm = _finite(request.get("x_mm"), "x_mm")
+    y_mm = _finite(request.get("y_mm"), "y_mm")
+    pcbnew = _load_pcbnew()
+    board = _load_board(pcbnew, input_pcb)
+    if reference in _board_refs(board):
+        _fail(f"reference already exists on input_pcb: {reference}")
+    footprint_file = input_pcb.parent / ".toolkit-kibuzzard.kicad_mod"
+    if footprint_file.exists() or footprint_file.is_symlink():
+        _fail("temporary KiBuzzard footprint path already exists")
+    generated = dict(request)
+    generated["output_file"] = str(footprint_file)
+    try:
+        details = kibuzzard_generate(generated)
+        footprint = pcbnew.FootprintLoad(str(footprint_file.parent), footprint_file.stem)
+        if footprint is None:
+            _fail("KiCad could not load the generated KiBuzzard footprint")
+        footprint.SetReference(reference)
+        footprint.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_mm), pcbnew.FromMM(y_mm)))
+        board.Add(footprint)
+        _save_board(pcbnew, board, output_pcb)
+    finally:
+        footprint_file.unlink(missing_ok=True)
+    return {**details, "input_pcb": str(input_pcb), "output_pcb": str(output_pcb),
+            "reference": reference, "x_mm": x_mm, "y_mm": y_mm}
+
+
+def kinotes_manage(request: dict[str, Any]) -> dict[str, Any]:
+    project_dir = _absolute_path(request.get("project_dir"), "project_dir")
+    if not project_dir.is_dir():
+        _fail("project_dir must name an existing directory")
+    action = _string(request.get("action"), "action")
+    if action not in {"read", "save_notes", "save_todos", "save_version_log", "export_changelog"}:
+        _fail("Unsupported KiNotes action")
+    manager_module = _load_plugin("kinotes", "core.notes_manager")
+    manager = manager_module.NotesManager(str(project_dir))
+    if action == "read":
+        return {"project_dir": str(project_dir), "notes": manager.load(),
+                "todos": manager.load_todos(), "version_log": manager.load_version_log()}
+    if action == "save_notes":
+        content = request.get("notes")
+        if not isinstance(content, str):
+            _fail("notes must be a string")
+        success = manager.save(content)
+    elif action == "save_todos":
+        content = request.get("todos")
+        if not isinstance(content, list):
+            _fail("todos must be an array")
+        success = manager.save_todos(content)
+    elif action == "save_version_log":
+        content = request.get("version_log")
+        if not isinstance(content, dict):
+            _fail("version_log must be an object")
+        success = manager.save_version_log(content)
+    else:
+        changelog = manager.export_changelog()
+        output = project_dir / "CHANGELOG.md"
+        output.write_text(changelog)
+        success = bool(changelog)
+    if not success:
+        _fail(f"KiNotes {action} failed")
+    return {"project_dir": str(project_dir), "action": action,
+            "notes_file": manager.notes_path, "todos_file": manager.todos_path,
+            "version_log_file": manager.version_log_path,
+            "changelog": str(project_dir / "CHANGELOG.md") if action == "export_changelog" else None}
+
+
+def pcb_action_tools(request: dict[str, Any]) -> dict[str, Any]:
+    input_pcb = _input_pcb(request.get("input_pcb"))
+    output_pcb = _output_pcb(request.get("output_pcb"), input_pcb)
+    report_dir = _absolute_path(request.get("report_dir"), "report_dir")
+    if not report_dir.is_dir():
+        _fail("report_dir must name an existing directory")
+    action = _string(request.get("action"), "action")
+    pcbnew = _load_pcbnew()
+    board = _load_board(pcbnew, input_pcb)
+    original = input_pcb.read_bytes()
+    _clear_selection(board)
+    pcbnew.GetBoard = lambda: board
+    pcbnew.Refresh = lambda: None
+    result: dict[str, Any] = {"action": action}
+    reports: list[str] = []
+
+    if action == "snap_to_grid":
+        references = _refs(request.get("references"), _board_refs(board))
+        by_ref = {item.GetReference(): item for item in board.GetFootprints()}
+        for reference in references:
+            _set_selected(by_ref[reference], True)
+        module = _load_plugin("action_tools", "Snap2Grid.snap2grid")
+        module.pcbnew.GetBoard = lambda: board
+        module.pcbnew.Refresh = lambda: None
+        origin = _string(request.get("origin", "grid"), "origin")
+        module.snap2grid(_finite(request.get("grid_mm"), "grid_mm"),
+                         {"grid": "Grid Origin", "aux": "Aux Origin", "zero": "Zero Origin"}.get(origin, origin))
+        result.update({"references": references, "grid_mm": request["grid_mm"], "origin": request["origin"]})
+    elif action == "move_drawings":
+        selected = _select_uuids(board.GetDrawings(), request.get("drawing_uuids"), "drawing_uuids")
+        layer = _string(request.get("layer"), "layer")
+        layer_id = board.GetLayerID(layer)
+        if layer_id < 0:
+            _fail(f"Unknown board layer: {layer}")
+        module = _load_plugin("action_tools", "MoveToLayer.move_to_layer")
+        module.pcbnew.GetBoard = lambda: board
+        module.pcbnew.Refresh = lambda: None
+        module.MoveToLayer(board, layer_id)
+        result.update({"drawing_uuids": [_item_uuid(item) for item in selected], "layer": layer})
+    elif action == "missing_3d":
+        module = _load_plugin("action_tools", "checking3Dmodels.model3d_list")
+        module.pcbnew.GetBoard = lambda: board
+        module.wx.LogMessage = lambda *args, **kwargs: None
+        module.show = False
+        module.check3D()
+        for suffix in ("_missing3Dmodels.txt", "_log_missing3Dmodels.txt"):
+            generated = input_pcb.with_name(input_pcb.stem + suffix)
+            if generated.is_file():
+                target = report_dir / generated.name
+                shutil.move(generated, target)
+                reports.append(str(target))
+        if len(reports) != 2:
+            _fail("Missing 3D Models did not create both reports")
+    elif action == "annular_check":
+        module = _load_plugin("action_tools", "AnnularChecker.annular_checker")
+        drill_extra = _finite(request.get("drill_extra_mm", 0.1), "drill_extra_mm")
+        pad_min = _finite(request.get("pad_min_mm", 0.125), "pad_min_mm")
+        via_min = _finite(request.get("via_min_mm", 0.125), "via_min_mm")
+        module.DRL_EXTRA_ius = pcbnew.FromMM(drill_extra)
+        module.MIN_AR_SIZE = pcbnew.FromMM(pad_min)
+        module.MIN_AR_SIZE_V = pcbnew.FromMM(via_min)
+        violations = []
+        via_pass = pad_pass = npth_pass = 0
+        for item in board.GetTracks():
+            if isinstance(item, pcbnew.PCB_VIA):
+                ring = module.vias_annring_size(item)
+                if ring < module.MIN_AR_SIZE_V:
+                    violations.append({"kind": "via", "uuid": _item_uuid(item),
+                                       "annular_mm": pcbnew.ToMM(ring)})
+                else:
+                    via_pass += 1
+        for footprint in board.GetFootprints():
+            for pad in footprint.Pads():
+                attribute = pad.GetAttribute()
+                if attribute == pcbnew.PAD_ATTRIB_PTH:
+                    ring = module.annring_size(pad)
+                    if ring < module.MIN_AR_SIZE:
+                        violations.append({"kind": "pth", "reference": footprint.GetReference(),
+                                           "pad": pad.GetNumber(), "annular_mm": pcbnew.ToMM(ring)})
+                    else:
+                        pad_pass += 1
+                elif attribute == pcbnew.PAD_ATTRIB_NPTH:
+                    ring_x, ring_y = module.annringNP_size(pad)
+                    ring = min(ring_x, ring_y)
+                    if ring != 0 and ring < module.MIN_AR_SIZE:
+                        violations.append({"kind": "npth", "reference": footprint.GetReference(),
+                                           "pad": pad.GetNumber(), "annular_mm": pcbnew.ToMM(ring)})
+                    else:
+                        npth_pass += 1
+        report = report_dir / (input_pcb.stem + "_AR-Check.json")
+        report.write_text(json.dumps({"thresholds_mm": {"pad": pad_min, "via": via_min,
+                                                         "drill_extra": drill_extra},
+                                      "passes": {"vias": via_pass, "pth": pad_pass, "npth": npth_pass},
+                                      "violations": violations}, indent=2, sort_keys=True))
+        reports.append(str(report))
+        result["violation_count"] = len(violations)
+    else:
+        _fail("Unsupported pcb-action-tools operation")
+    _save_board(pcbnew, board, output_pcb)
+    _assert_file_unchanged(input_pcb, original)
+    return {**result, "input_pcb": str(input_pcb), "output_pcb": str(output_pcb), "reports": reports}
+
+
+def viafence_apply(request: dict[str, Any]) -> dict[str, Any]:
+    input_pcb = _input_pcb(request.get("input_pcb"))
+    output_pcb = _output_pcb(request.get("output_pcb"), input_pcb)
+    pcbnew = _load_pcbnew()
+    board = _load_board(pcbnew, input_pcb)
+    original = input_pcb.read_bytes()
+    _clear_selection(board)
+    tracks = _select_uuids(board.GetTracks(), request.get("track_uuids"), "track_uuids")
+    pad_references = request.get("pad_references", [])
+    if not isinstance(pad_references, list):
+        _fail("pad_references must be an array")
+    references = [_string(value, "pad_references[]") for value in pad_references]
+    by_ref = {item.GetReference(): item for item in board.GetFootprints()}
+    missing = sorted(set(references) - set(by_ref))
+    if missing:
+        _fail("pad_references are not on input_pcb: " + ", ".join(missing))
+    for reference in references:
+        _set_selected(by_ref[reference], True)
+    module = _load_plugin("viafence", "via_fence")
+    pcbnew.GetBoard = lambda: board
+    pcbnew.Refresh = lambda: None
+    module.pcbnew.GetBoard = lambda: board
+    module.pcbnew.Refresh = lambda: None
+    module.wx.MessageBox = lambda *args, **kwargs: module.wx.ID_OK
+    cfg = module.ViaFenceConfig(
+        spacing_mm=_finite(request.get("spacing_mm"), "spacing_mm"),
+        track_to_via_gap_mm=_finite(request.get("gap_mm"), "gap_mm"),
+        via_diameter_mm=_finite(request.get("via_diameter_mm"), "via_diameter_mm"),
+        via_drill_mm=_finite(request.get("drill_mm"), "drill_mm"),
+        staggered=_is_bool(request.get("staggered", False), "staggered"),
+        net_name=_string(request.get("net_name"), "net_name"), show_stats=False,
+    )
+    class Dialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def ShowModal(self):
+            return module.wx.ID_OK
+        def get_config(self):
+            return cfg
+        def Destroy(self):
+            pass
+    module.ViaFenceDialog = Dialog
+    before_vias = sum(isinstance(item, pcbnew.PCB_VIA) for item in board.GetTracks())
+    module.ViaFencePlugin().Run()
+    after_vias = sum(isinstance(item, pcbnew.PCB_VIA) for item in board.GetTracks())
+    placed = after_vias - before_vias
+    if placed <= 0:
+        _fail("ViaFence produced no vias for the selected geometry")
+    _save_board(pcbnew, board, output_pcb)
+    _assert_file_unchanged(input_pcb, original)
+    return {"input_pcb": str(input_pcb), "output_pcb": str(output_pcb),
+            "track_uuids": [_item_uuid(item) for item in tracks],
+            "pad_references": references, "placed_vias": placed, "net_name": cfg.net_name}
+
+
+def rf_tools_apply(request: dict[str, Any]) -> dict[str, Any]:
+    input_pcb = _input_pcb(request.get("input_pcb"))
+    output_pcb = _output_pcb(request.get("output_pcb"), input_pcb)
+    action = _string(request.get("action"), "action")
+    pcbnew = _load_pcbnew()
+    board = _load_board(pcbnew, input_pcb)
+    original = input_pcb.read_bytes()
+    _clear_selection(board)
+    drawings = []
+    if action in {"remove_solder_mask", "remove_tapers"}:
+        tracks = []
+        if action == "remove_solder_mask":
+            drawings = _select_uuids(board.GetDrawings(), request.get("drawing_uuids"), "drawing_uuids")
+    else:
+        tracks = _select_uuids(board.GetTracks(), request.get("track_uuids"), "track_uuids")
+    pcbnew.GetBoard = lambda: board
+    pcbnew.Refresh = lambda: None
+    before = {"tracks": len(list(board.GetTracks())), "zones": board.GetAreaCount(),
+              "drawings": len(list(board.GetDrawings()))}
+    result: dict[str, Any] = {"action": action,
+                              "track_uuids": [_item_uuid(item) for item in tracks],
+                              "drawing_uuids": [_item_uuid(item) for item in drawings]}
+    if action == "track_length":
+        module = _load_plugin("rf_tools", "tracks_length.trace_length")
+        result["length_mm"] = pcbnew.ToMM(module.getSelTracksLength(board))
+    elif action in {"round_tracks", "reconnect_tracks", "remove_rounding"}:
+        module = _load_plugin("rf_tools", "round_tracks.round_trk")
+        module.pcbnew.Refresh = lambda: None
+        module.wxLogDebug = lambda *args, **kwargs: None
+        if action == "round_tracks":
+            module.Round_Selection(board, pcbnew.FromMM(_finite(request.get("distance_mm"), "distance_mm")),
+                                   _is_int(request.get("segments", 16), "segments", minimum=2))
+        elif action == "reconnect_tracks":
+            module.Connect_Segments(board)
+        else:
+            generated = [item for item in tracks if isinstance(item, pcbnew.PCB_ARC)]
+            if not generated:
+                _fail("remove_rounding requires exact generated PCB_ARC UUIDs")
+            for item in generated:
+                board.RemoveNative(item)
+            result["removed_rounding_items"] = len(generated)
+    elif action in {"add_taper", "remove_tapers"}:
+        if not hasattr(pcbnew.ZONE_SETTINGS, "SMOOTHING_FILLET"):
+            pcbnew.ZONE_SETTINGS.SMOOTHING_FILLET = pcbnew.ZONE_SETTINGS.CORNER_SMOOTHING_FILLET
+        module = _load_plugin("rf_tools", "taper_fz.taper")
+        module.pcbnew.GetBoard = lambda: board
+        module.pcbnew.Refresh = lambda: None
+        if action == "add_taper":
+            pads = request.get("pads", [])
+            if not isinstance(pads, list):
+                _fail("pads must be an array")
+            by_key = {(fp.GetReference(), pad.GetNumber()): pad
+                      for fp in board.GetFootprints() for pad in fp.Pads()}
+            for row in pads:
+                if not isinstance(row, dict):
+                    _fail("pads[] must be an object")
+                key = (_string(row.get("reference"), "pads[].reference"),
+                       _string(row.get("pad"), "pads[].pad"))
+                if key not in by_key:
+                    _fail(f"Pad not found: {key[0]}:{key[1]}")
+                _set_selected(by_key[key], True)
+            module.SetTaper_Zone(board)
+        else:
+            if request.get("confirm_all") is not True:
+                _fail("remove_tapers requires confirm_all=true")
+            tapers = [zone for zone in board.Zones()
+                      if zone.GetAssignedPriority() == module.MAGIC_TAPER_ZONE_ID]
+            for zone in tapers:
+                board.RemoveNative(zone)
+            result["removed_tapers"] = len(tapers)
+    elif action in {"expand_solder_mask", "remove_solder_mask"}:
+        module = _load_plugin("rf_tools", "trace_solder_expander.trace_solder_expander")
+        module.pcbnew.Refresh = lambda: None
+        if action == "expand_solder_mask":
+            module.solderExpander(board, tracks, pcbnew.FromMM(_finite(request.get("clearance_mm"), "clearance_mm")))
+        else:
+            for item in drawings:
+                board.RemoveNative(item)
+            result["removed_mask_items"] = len(drawings)
+    elif action == "trace_clearance":
+        module = _load_plugin("rf_tools", "trace_clearance.trace_clearance")
+        module.pcbnew.Refresh = lambda: None
+        if not hasattr(pcbnew.ZONE, "SetDoNotAllowCopperPour"):
+            pcbnew.ZONE.SetDoNotAllowCopperPour = pcbnew.ZONE.SetDoNotAllowZoneFills
+        module.set_keepouts(board, tracks, pcbnew.FromMM(_finite(request.get("clearance_mm"), "clearance_mm")))
+    elif action == "via_fence":
+        action_module = _load_plugin("rf_tools", "via_fence_generator.viafence_action")
+        geometry = _load_plugin("rf_tools", "via_fence_generator.viafence")
+        engine = action_module.ViaFenceAction()
+        engine.boardObj = board
+        engine.viaSize = pcbnew.FromMM(_finite(request.get("via_diameter_mm"), "via_diameter_mm"))
+        engine.viaDrill = pcbnew.FromMM(_finite(request.get("drill_mm"), "drill_mm"))
+        engine.viaPitch = pcbnew.FromMM(_finite(request.get("pitch_mm"), "pitch_mm"))
+        engine.viaOffset = pcbnew.FromMM(_finite(request.get("offset_mm"), "offset_mm"))
+        net_name = _string(request.get("net_name"), "net_name")
+        net = next((value for name, value in board.GetNetsByName().items() if str(name) == net_name), None)
+        if net is None:
+            _fail(f"Net not found: {net_name}")
+        path_list = [[[item.GetStart().x, item.GetStart().y], [item.GetEnd().x, item.GetEnd().y]]
+                     for item in tracks if isinstance(item, pcbnew.PCB_TRACK)]
+        points = geometry.generateViaFence(path_list, engine.viaOffset, engine.viaPitch)
+        safe = []
+        for index, point in enumerate(points):
+            if all(action_module.distance(pcbnew.VECTOR2I(int(point[0]), int(point[1])),
+                                          pcbnew.VECTOR2I(int(other[0]), int(other[1]))) >= int(engine.viaSize * 1.2)
+                   for other in points[index + 1:]):
+                safe.append(point)
+        engine.viaPointsSafe = safe
+        setattr(action_module, "wxLogDebug", lambda *args, **kwargs: None)
+        setattr(action_module.wx, "LogMessage", lambda *args, **kwargs: None)
+        engine.checkPads()
+        engine.checkTracks()
+        engine.createVias(engine.viaPointsSafe, engine.viaDrill, engine.viaSize, net.GetNetCode())
+        if not engine.viaPointsSafe:
+            _fail("RF-Tools removed every candidate via because of pad/track clearance")
+        result["candidate_vias"] = len(points)
+        result["placed_vias"] = len(engine.viaPointsSafe)
+    else:
+        _fail("Unsupported RF-Tools operation")
+    after = {"tracks": len(list(board.GetTracks())), "zones": board.GetAreaCount(),
+             "drawings": len(list(board.GetDrawings()))}
+    result["before"] = before
+    result["after"] = after
+    _save_board(pcbnew, board, output_pcb)
+    _assert_file_unchanged(input_pcb, original)
+    return {**result, "input_pcb": str(input_pcb), "output_pcb": str(output_pcb)}
+
+
 OPERATIONS = {
     "replicate_discover": replicate_discover,
     "replicate_layout": replicate_layout,
@@ -948,6 +1357,11 @@ OPERATIONS = {
     "prefab_gate": prefab_gate,
     "pinout_image_export": pinout_image_export,
     "kibuzzard_generate": kibuzzard_generate,
+    "kibuzzard_insert": kibuzzard_insert,
+    "kinotes_manage": kinotes_manage,
+    "pcb_action_tools": pcb_action_tools,
+    "viafence_apply": viafence_apply,
+    "rf_tools_apply": rf_tools_apply,
 }
 
 

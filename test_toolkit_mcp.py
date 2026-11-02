@@ -108,6 +108,7 @@ class ToolkitBoundaries(unittest.TestCase):
     def test_native_board_preserves_project_library_tables(self):
         (self.project / "fp-lib-table").write_text("(fp_lib_table)")
         (self.project / "sym-lib-table").write_text("(sym_lib_table)")
+        self.board.with_suffix(".kicad_dru").write_text('(version 1)\n(rule "keep")\n')
         output = self.root / "variant"
 
         def native(_, __, **parameters):
@@ -118,6 +119,7 @@ class ToolkitBoundaries(unittest.TestCase):
             toolkit._native_board("variant_apply", str(self.board), str(output), choices={"Power": "high"})
         self.assertEqual((output / "fp-lib-table").read_text(), "(fp_lib_table)")
         self.assertEqual((output / "sym-lib-table").read_text(), "(sym_lib_table)")
+        self.assertEqual((output / "fixture.kicad_dru").read_text(), '(version 1)\n(rule "keep")\n')
 
     def test_timeout_stops_the_process_group(self):
         pidfile = self.root / "child.pid"
@@ -145,10 +147,18 @@ class ToolkitBoundaries(unittest.TestCase):
                  "scan_project_dependencies", "localize_project_dependencies", "export_testpoints",
                  "generate_pinout", "generate_pinout_image", "generate_kibuzzard_footprint",
                  "apply_variant", "solve_trace_impedance", "run_prefab_gate",
-                 "get_board_edit_state", "edit_board_copper_batch"}
+                 "get_board_edit_state", "edit_board_copper_batch", "stitch_vias",
+                 "edit_silk_references", "fanout_footprint", "apply_impedance_netclasses",
+                 "update_clearance_matrix", "place_kobee_label", "place_kobee_artwork",
+                 "insert_kibuzzard_footprint", "manage_project_notes", "run_pcb_action_tool",
+                 "apply_via_fence", "run_rf_tool", "separate_pcb", "create_stencil", "present_pcb",
+                 "search_skidl_parts", "convert_netlist_to_skidl", "generate_offline_cost_spreadsheet"}
         self.assertEqual(set(actual) - original, added)
-        self.assertEqual(toolkit.ADDON_COVERAGE["de.markh.kivar"]["status"], "full")
-        self.assertEqual(toolkit.ADDON_COVERAGE["com.github.ozzysv.viafence"]["status"], "blocked")
+        kivar = toolkit.ADDON_COVERAGE["de.markh.kivar"]
+        viafence = toolkit.ADDON_COVERAGE["com.github.ozzysv.viafence"]
+        assert isinstance(kivar, dict) and isinstance(viafence, dict)
+        self.assertEqual(kivar["status"], "full")
+        self.assertEqual(viafence["status"], "full")
         self.assertEqual(toolkit.ENGINE_COVERAGE["PcbDraw"]["tools"], ["render_pcb"])
         for coverage in [toolkit.ADDON_COVERAGE, toolkit.ENGINE_COVERAGE]:
             for package, row in coverage.items():
