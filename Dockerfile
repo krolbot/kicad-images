@@ -130,9 +130,9 @@ ADD --checksum=sha256:e8a308874ba94cd1cf43a580f7436a3b0de7bbd08502118472283a1d57
 ADD --checksum=sha256:ca46e7bc98e93d7885cf572651bcf20d28fc4219805e77527ac1adaa1eb756de https://raw.githubusercontent.com/MitjaNemec/ReplicateLayout/52fb33c26e79a2b5e0735dd96e7a2c00f1b5ea66/replicate_layout_test_project/replicate_layout_test_project.kicad_pro /opt/kicad-build/replication-fixture/replicate_layout_test_project.kicad_pro
 ADD --checksum=sha256:bd067cbf8b4726d726ee0c8beb484eac44a0cda514b46385ee6b100dea58fa08 https://raw.githubusercontent.com/MitjaNemec/ReplicateLayout/52fb33c26e79a2b5e0735dd96e7a2c00f1b5ea66/replicate_layout_test_project/replicate_layout_test_project.kicad_sch /opt/kicad-build/replication-fixture/replicate_layout_test_project.kicad_sch
 ADD --checksum=sha256:7a6ecfc7da6127b914e1b779b3ffac5479fde66e992ed1c55cfa7774f9ae4243 https://raw.githubusercontent.com/MitjaNemec/ReplicateLayout/52fb33c26e79a2b5e0735dd96e7a2c00f1b5ea66/test_helpers.py /opt/kicad-build/replication-fixture/test_helpers.py
-COPY mcp_smoke.py mcp_autoroute_smoke.py mcp_board_batch.py mcp_board_batch_worker.py mcp_board_batch_fixture.py mcp_board_batch_smoke.py toolkit_mcp.py toolkit_native.py toolkit_ipc.py mcp_toolkit_smoke.py addon_operations_smoke.py native_ipc_smoke.py /usr/local/share/kicad/
+COPY mcp_smoke.py mcp_http.py mcp_http_smoke.py mcp_autoroute_smoke.py mcp_board_batch.py mcp_board_batch_worker.py mcp_board_batch_fixture.py mcp_board_batch_smoke.py toolkit_mcp.py toolkit_native.py toolkit_ipc.py mcp_toolkit_smoke.py addon_operations_smoke.py native_ipc_smoke.py /usr/local/share/kicad/
 COPY root/ /
-RUN chmod 0755 /usr/local/bin/kicad-mcp /usr/local/bin/freerouting /usr/local/bin/ibom /custom-cont-init.d/50-kicad-toolkit.sh \
+RUN chmod 0755 /usr/local/bin/kicad-mcp /usr/local/bin/kicad-mcp-http /usr/local/bin/freerouting /usr/local/bin/ibom /custom-cont-init.d/50-kicad-toolkit.sh \
     && chmod -R a+rX /opt/kicad-build/replication-fixture \
     && ln -sf /usr/local/bin/kicad-mcp /opt/kicad-mcp/bin/mcp-server-kicad
 
@@ -153,6 +153,7 @@ RUN install -d -o abc -g abc /projects /opt/kicad-build/probe-home \
         KICAD_DOCUMENTS_HOME=/opt/kicad-build/probe-home/.local/share \
     && /command/s6-setuidgid abc /usr/bin/python3 /usr/local/share/kicad/pcm.py seed /opt/kicad-addons "$HOME" \
     && /command/s6-setuidgid abc env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_smoke.py \
+    && env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http_smoke.py \
     && /command/s6-setuidgid abc env -u PYTHONPATH /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_autoroute_smoke.py \
     && install -d -o abc -g abc /projects/board-batch-smoke \
     && /command/s6-setuidgid abc env -u PYTHONPATH /usr/bin/python3 /usr/local/share/kicad/mcp_board_batch_fixture.py /projects/board-batch-smoke/fixture.kicad_pcb \
@@ -170,5 +171,6 @@ RUN /command/s6-setuidgid abc env -u PYTHONPATH timeout 120s xvfb-run -a -e /dev
     && rm -rf /tmp/org.kicad.kicad /tmp/kicad /tmp/.X11-unix \
     && install -d -m 1777 -o root -g root /tmp/.X11-unix
 
-# The inherited /init starts the browser desktop; MCP is invoked via docker exec.
+# The inherited /init starts the browser desktop. The same image also provides
+# supervised-by-Compose HTTP MCP through the explicit kicad-mcp-http entrypoint.
 WORKDIR /projects
