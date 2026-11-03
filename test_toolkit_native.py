@@ -86,6 +86,25 @@ class ToolkitNativeValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(toolkit_native.NativeError, "kind must"):
                 toolkit_native.impedance_solve({"kind": "coax"})
             load_plugin.assert_not_called()
+    def test_footprint_pad_validation_rejects_invalid_drills_before_kicad(self):
+        base = {"number": "1", "kind": "smd", "shape": "rect", "x_mm": 0, "y_mm": 0,
+                "size_x_mm": 1, "size_y_mm": 1}
+        with self.assertRaisesRegex(toolkit_native.NativeError, "SMD pads cannot have a drill"):
+            toolkit_native._pad_spec({**base, "drill_x_mm": 0.5})
+        with self.assertRaisesRegex(toolkit_native.NativeError, "required for through-hole"):
+            toolkit_native._pad_spec({**base, "kind": "thru_hole"})
+        with self.assertRaisesRegex(toolkit_native.NativeError, "no larger than the pad"):
+            toolkit_native._pad_spec({**base, "kind": "np_thru_hole", "drill_x_mm": 2})
+        slot = toolkit_native._pad_spec({**base, "kind": "thru_hole", "size_x_mm": 3,
+                                         "drill_x_mm": 2, "drill_y_mm": 0.8})
+        self.assertEqual((slot["drill_x_mm"], slot["drill_y_mm"]), (2, 0.8))
+        with patch.object(toolkit_native, "_load_pcbnew") as load_pcbnew:
+            with self.assertRaisesRegex(toolkit_native.NativeError, "KiCad-safe"):
+                toolkit_native.footprint_create({
+                    "output_footprint": str(self.root / "bad.kicad_mod"),
+                    "name": "../name", "pads": [base],
+                })
+            load_pcbnew.assert_not_called()
 
 
 if __name__ == "__main__":

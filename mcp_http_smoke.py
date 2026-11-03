@@ -51,7 +51,7 @@ async def authenticated_probe() -> None:
                 tools = (await session.list_tools()).tools
                 names = {tool.name for tool in tools}
                 required = {"get_version", "get_toolkit_status", "run_erc", "run_drc",
-                            "add_copper_zone", "fill_zones"}
+                            "add_copper_zone", "fill_zones", "create_footprint", "edit_footprint"}
                 assert required <= names, sorted(required - names)
                 result = await session.call_tool("get_version", {})
                 assert not result.is_error, result

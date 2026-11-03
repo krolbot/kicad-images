@@ -95,6 +95,7 @@ mcp = MCPServer(
       "discover_replication precedes replicate_layout; place_footprints and place_parts create new boards. "
       "scan_project_dependencies precedes localize_project_dependencies, which works only on a project copy. "
       "export_testpoints, generate_pinout, generate_pinout_image, generate_kibuzzard_footprint, apply_variant, solve_trace_impedance and run_prefab_gate expose their pinned addon engines. "
+      "create_footprint and edit_footprint author native .kicad_mod pads, circular drills and oval slots. "
       "get_board_edit_state precedes CAS-guarded edit_board_copper_batch, whose dry run is required before apply. "
       "Toolkit operations accept absolute paths within /projects, preserve their inputs and require a NEW output directory. "
       "An existing output is an error, not permission to replace it. Generated artifacts are not an electrical approval; use run_erc/run_drc.",
@@ -527,6 +528,43 @@ class ClearanceMatrixEntry(Parameters):
 class PadSelector(Parameters):
     reference: Annotated[str, Field(min_length=1, max_length=256)]
     pad: Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class FootprintPad(Parameters):
+    number: Annotated[str, Field(max_length=64)]
+    kind: Literal["smd", "thru_hole", "np_thru_hole"]
+    shape: Literal["circle", "rect", "oval", "roundrect"]
+    x_mm: FiniteMM
+    y_mm: FiniteMM
+    size_x_mm: Annotated[float, Field(gt=0, le=1000, allow_inf_nan=False)]
+    size_y_mm: Annotated[float, Field(gt=0, le=1000, allow_inf_nan=False)]
+    rotation_deg: Angle = 0
+    side: Literal["front", "back"] = "front"
+    drill_x_mm: Annotated[float, Field(gt=0, le=1000, allow_inf_nan=False)] | None = None
+    drill_y_mm: Annotated[float, Field(gt=0, le=1000, allow_inf_nan=False)] | None = None
+    roundrect_ratio: Annotated[float, Field(ge=0, le=0.5, allow_inf_nan=False)] = 0.25
+
+
+class AddFootprintPad(Parameters):
+    kind: Literal["add"]
+    pad: FootprintPad
+
+
+class ReplaceFootprintPad(Parameters):
+    kind: Literal["replace"]
+    number: Annotated[str, Field(max_length=64)]
+    occurrence: Annotated[int, Field(ge=1, le=10000)] = 1
+    pad: FootprintPad
+
+
+class DeleteFootprintPad(Parameters):
+    kind: Literal["delete"]
+    number: Annotated[str, Field(max_length=64)]
+    occurrence: Annotated[int, Field(ge=1, le=10000)] = 1
+
+
+FootprintPadEdit = Annotated[AddFootprintPad | ReplaceFootprintPad | DeleteFootprintPad,
+                             Field(discriminator="kind")]
 
 
 class SnapToGrid(Parameters):
@@ -1223,6 +1261,72 @@ def generate_kibuzzard_footprint(
                          alignment=alignment, left_cap=left_cap, right_cap=right_cap,
                          padding_mm=padding_mm, line_spacing=line_spacing,
                          inline_format=inline_format)
+        return {**_result(destination), "operation": result}
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
+
+
+@mcp.tool(annotations=_EXPORT)
+def create_footprint(
+    output_dir: str,
+    name: Annotated[str, Field(min_length=1, max_length=128,
+                               pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+\-]{0,127}$")],
+    pads: Annotated[list[FootprintPad], Field(min_length=1, max_length=10000)],
+    description: Annotated[str, Field(max_length=10000)] = "",
+    keywords: Annotated[str, Field(max_length=10000)] = "",
+    allow_missing_courtyard: bool = False,
+    allow_solder_mask_bridges: bool = False,
+) -> dict[str, JsonValue]:
+    """Create a NEW native KiCad .kicad_mod footprint with SMD, PTH and NPTH pads.
+
+    Through-hole drill_x_mm is required; drill_y_mm defaults to drill_x_mm. Unequal drill
+    dimensions create an oval slot. The result is reopened by KiCad and returned with pad UUIDs.
+    """
+    destination = _path(output_dir, new=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir()
+    try:
+        result = _native("footprint_create", destination,
+                         output_footprint=str(destination / f"{name}.kicad_mod"), name=name,
+                         pads=[pad.model_dump() for pad in pads], description=description,
+                         keywords=keywords, allow_missing_courtyard=allow_missing_courtyard,
+                         allow_solder_mask_bridges=allow_solder_mask_bridges)
+        return {**_result(destination), "operation": result}
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
+
+
+@mcp.tool(annotations=_EXPORT)
+def edit_footprint(
+    footprint_path: str, output_dir: str,
+    operations: Annotated[list[FootprintPadEdit], Field(min_length=1, max_length=10000)],
+    name: Annotated[str, Field(min_length=1, max_length=128,
+                               pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+\-]{0,127}$")] | None = None,
+    description: Annotated[str, Field(max_length=10000)] | None = None,
+    keywords: Annotated[str, Field(max_length=10000)] | None = None,
+    allow_missing_courtyard: bool | None = None,
+    allow_solder_mask_bridges: bool | None = None,
+) -> dict[str, JsonValue]:
+    """Edit pads in an existing .kicad_mod and save a NEW footprint; source stays unchanged.
+
+    Operations add, replace or delete one pad. Replace/delete select by pad number plus a
+    one-based occurrence for footprints that deliberately repeat numbers. Native KiCad loading
+    and saving preserves graphics, text, models and unsupported pad fields not being replaced.
+    """
+    source = _path(footprint_path, ".kicad_mod")
+    destination = _path(output_dir, new=True)
+    output_name = name or source.stem
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir()
+    try:
+        result = _native("footprint_edit", destination, input_footprint=str(source),
+                         output_footprint=str(destination / f"{output_name}.kicad_mod"),
+                         name=output_name, operations=[operation.model_dump() for operation in operations],
+                         description=description, keywords=keywords,
+                         allow_missing_courtyard=allow_missing_courtyard,
+                         allow_solder_mask_bridges=allow_solder_mask_bridges)
         return {**_result(destination), "operation": result}
     except BaseException:
         shutil.rmtree(destination)

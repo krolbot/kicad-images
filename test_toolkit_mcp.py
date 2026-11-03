@@ -152,7 +152,8 @@ class ToolkitBoundaries(unittest.TestCase):
                  "update_clearance_matrix", "place_kobee_label", "place_kobee_artwork",
                  "insert_kibuzzard_footprint", "manage_project_notes", "run_pcb_action_tool",
                  "apply_via_fence", "run_rf_tool", "separate_pcb", "create_stencil", "present_pcb",
-                 "search_skidl_parts", "convert_netlist_to_skidl", "generate_offline_cost_spreadsheet"}
+                 "search_skidl_parts", "convert_netlist_to_skidl", "generate_offline_cost_spreadsheet",
+                 "create_footprint", "edit_footprint"}
         self.assertEqual(set(actual) - original, added)
         kivar = toolkit.ADDON_COVERAGE["de.markh.kivar"]
         viafence = toolkit.ADDON_COVERAGE["com.github.ozzysv.viafence"]
@@ -172,6 +173,12 @@ class ToolkitBoundaries(unittest.TestCase):
         for name in added:
             self.assertIsNotNone(actual[name].annotations)
         self.assertIn("layout", actual["place_footprints"].input_schema["required"])
+        self.assertEqual(actual["create_footprint"].input_schema["properties"]["name"]["pattern"],
+                         r"^[A-Za-z0-9][A-Za-z0-9_.+\-]{0,127}$")
+        self.assertIn("pads", actual["create_footprint"].input_schema["required"])
+        self.assertIn("operations", actual["edit_footprint"].input_schema["required"])
+        edit_items = actual["edit_footprint"].input_schema["properties"]["operations"]["items"]
+        self.assertEqual(edit_items["discriminator"]["propertyName"], "kind")
         for name in ["manufacture_pcb", "generate_interactive_bom", "panelize_pcb"]:
             annotations = actual[name].annotations
             assert annotations is not None
