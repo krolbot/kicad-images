@@ -164,7 +164,9 @@ async def main():
                     assert created_by_number['']['kind'] == 'np_thru_hole'
                     assert created_by_number['2']['drill_shape'] == 'circle'
                     assert created_by_number['']['drill_shape'] == 'slot'
-                    source_footprint = Path('/usr/share/kicad/footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod')
+                    stock_footprint = Path('/usr/share/kicad/footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod')
+                    source_footprint = root / 'source-footprint.kicad_mod'
+                    shutil.copy2(stock_footprint, source_footprint)
                     source_before = hashlib.sha256(source_footprint.read_bytes()).hexdigest()
                     edited = await checked(session, 'edit_footprint', {
                         'footprint_path': str(source_footprint), 'output_dir': str(root / 'edited-footprint'),
