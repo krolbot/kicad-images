@@ -91,7 +91,7 @@ async def main():
                     page = await session.list_tools()
                     assert not page.model_dump(by_alias=True).get('nextCursor')
                     names = {t.name for t in page.tools}
-                    required = {'get_toolkit_status', 'manufacture_pcb', 'generate_interactive_bom', 'panelize_pcb', 'render_pcb', 'discover_replication', 'replicate_layout', 'place_footprints', 'place_parts', 'scan_project_dependencies', 'localize_project_dependencies', 'export_testpoints', 'generate_pinout', 'generate_pinout_image', 'generate_kibuzzard_footprint', 'apply_variant', 'solve_trace_impedance', 'run_prefab_gate', 'get_board_edit_state', 'edit_board_copper_batch', 'autoroute_pcb', 'run_drc', 'get_symbol_info'}
+                    required = {'get_toolkit_status', 'manufacture_pcb', 'generate_interactive_bom', 'panelize_pcb', 'render_pcb', 'discover_replication', 'replicate_layout', 'place_footprints', 'place_parts', 'scan_project_dependencies', 'localize_project_dependencies', 'export_testpoints', 'generate_pinout', 'generate_pinout_image', 'generate_kibuzzard_footprint', 'create_footprint', 'edit_footprint', 'apply_variant', 'solve_trace_impedance', 'run_prefab_gate', 'get_board_edit_state', 'edit_board_copper_batch', 'autoroute_pcb', 'run_drc', 'get_symbol_info'}
                     assert required <= names, sorted(required - names)
                     status = await checked(session, 'get_toolkit_status', {})
                     assert status['kicad'] == os.environ['KICAD_VERSION'], status
@@ -145,6 +145,50 @@ async def main():
                         'layer': 'F.SilkS', 'left_cap': 'square', 'right_cap': 'square'})
                     buzzard_mod = next(p for p in artifacts(buzzard) if p.suffix == '.kicad_mod')
                     assert '(footprint' in buzzard_mod.read_text()
+                    created = await checked(session, 'create_footprint', {
+                        'output_dir': str(root / 'created-footprint'), 'name': 'MCP_Mixed_Pads',
+                        'description': 'Native MCP footprint authoring canary', 'keywords': 'mcp smd pth npth slot',
+                        'pads': [
+                            {'number': '1', 'kind': 'smd', 'shape': 'roundrect', 'x_mm': 0, 'y_mm': 0,
+                             'size_x_mm': 1.2, 'size_y_mm': 2.0, 'roundrect_ratio': 0.2},
+                            {'number': '2', 'kind': 'thru_hole', 'shape': 'circle', 'x_mm': 3, 'y_mm': 0,
+                             'size_x_mm': 2.2, 'size_y_mm': 2.2, 'drill_x_mm': 1.0},
+                            {'number': '', 'kind': 'np_thru_hole', 'shape': 'oval', 'x_mm': 6, 'y_mm': 0,
+                             'size_x_mm': 2.0, 'size_y_mm': 3.4, 'drill_x_mm': 0.9, 'drill_y_mm': 2.3},
+                        ]})
+                    created_mod = next(p for p in artifacts(created) if p.suffix == '.kicad_mod')
+                    created_pads = created['operation']['pads']
+                    assert [pad['kind'] for pad in created_pads] == ['smd', 'thru_hole', 'np_thru_hole']
+                    assert created_pads[1]['drill_shape'] == 'circle'
+                    assert created_pads[2]['drill_shape'] == 'slot'
+                    source_footprint = Path('/usr/share/kicad/footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod')
+                    source_before = hashlib.sha256(source_footprint.read_bytes()).hexdigest()
+                    edited = await checked(session, 'edit_footprint', {
+                        'footprint_path': str(source_footprint), 'output_dir': str(root / 'edited-footprint'),
+                        'description': 'Edited without losing the original graphics or model',
+                        'operations': [
+                            {'kind': 'replace', 'number': '1', 'pad': {
+                                'number': '1', 'kind': 'thru_hole', 'shape': 'oval', 'x_mm': 0, 'y_mm': 0,
+                                'size_x_mm': 2.4, 'size_y_mm': 3.4, 'drill_x_mm': 0.9, 'drill_y_mm': 2.2}},
+                            {'kind': 'delete', 'number': '2'},
+                            {'kind': 'add', 'pad': {
+                                'number': '', 'kind': 'np_thru_hole', 'shape': 'oval', 'x_mm': 3, 'y_mm': 1.27,
+                                'size_x_mm': 2.0, 'size_y_mm': 3.0, 'drill_x_mm': 0.8, 'drill_y_mm': 2.1}},
+                        ]})
+                    edited_mod = next(p for p in artifacts(edited) if p.suffix == '.kicad_mod')
+                    operation = edited['operation']
+                    assert operation['changes'] == {'added': 1, 'replaced': 1, 'deleted': 1}
+                    assert operation['source_unchanged'] is True and operation['pad_count'] == 2
+                    assert operation['graphical_item_count'] > 0 and operation['model_count'] > 0
+                    assert [pad['drill_shape'] for pad in operation['pads']] == ['slot', 'slot']
+                    assert hashlib.sha256(source_footprint.read_bytes()).hexdigest() == source_before
+                    verify = ("import pcbnew,sys,pathlib;path=pathlib.Path(sys.argv[1]);"
+                              "io=pcbnew.PCB_IO_MGR.FindPlugin(pcbnew.PCB_IO_MGR.KICAD_SEXP);"
+                              "f=io.FootprintLoad(str(path.parent),path.stem,True);p=list(f.Pads());"
+                              "assert len(p)==2 and all(x.GetDrillShape()==pcbnew.PAD_DRILL_SHAPE_OBLONG for x in p);"
+                              "assert any(x.GetAttribute()==pcbnew.PAD_ATTRIB_NPTH for x in p)")
+                    subprocess.run(['/opt/kicad-tools/bin/python', '-c', verify, str(edited_mod)], check=True)
+                    assert created_mod.is_file()
                     variant = await checked(session, 'apply_variant', {'pcb_path': str(board),
                         'output_dir': str(root / 'variant'), 'choices': {'Power': 'high'}})
                     variant_board = next(p for p in artifacts(variant) if p.suffix == '.kicad_pcb')
@@ -226,6 +270,7 @@ async def main():
                                       'native_placement_modes': 3, 'parts_placer': True,
                                       'localization_archive': True, 'replication_sections': 3, 'testpoints': True,
                                       'pinout': True, 'pinout_image': True, 'kibuzzard': True,
+                                      'native_footprint_create_edit': True, 'footprint_slot_drills': True,
                                       'variant': True, 'impedance': True, 'prefab_gate': True,
                                       'native_drc_errors': 0, 'native_drc_warnings': len(drc_warnings),
                                       'source_unchanged': True,

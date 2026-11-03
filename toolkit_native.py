@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -113,6 +114,37 @@ def _output_pcb(value: Any, input_pcb: Path) -> Path:
         _fail("output_pcb parent directory does not exist")
     if raw == input_pcb:
         _fail("output_pcb must differ from input_pcb")
+    return raw
+
+
+FOOTPRINT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+\-]{0,127}$")
+
+
+def _footprint_name(value: Any, name: str = "name") -> str:
+    value = _string(value, name)
+    if not FOOTPRINT_NAME.fullmatch(value):
+        _fail(f"{name} must be a KiCad-safe footprint name without paths or library separators")
+    return value
+
+
+def _input_footprint(value: Any) -> Path:
+    path = _absolute_path(value, "input_footprint")
+    if path.suffix != ".kicad_mod" or not path.is_file():
+        _fail("input_footprint must name an existing .kicad_mod file")
+    return path
+
+
+def _output_footprint(value: Any, input_footprint: Path | None = None) -> Path:
+    raw = _absolute_path(value, "output_footprint")
+    if raw.suffix != ".kicad_mod":
+        _fail("output_footprint must end in .kicad_mod")
+    if raw.exists() or raw.is_symlink():
+        _fail("output_footprint already exists")
+    if not raw.parent.is_dir():
+        _fail("output_footprint parent directory does not exist")
+    if input_footprint is not None and raw == input_footprint:
+        _fail("output_footprint must differ from input_footprint")
+    _footprint_name(raw.stem, "output_footprint name")
     return raw
 
 
@@ -254,6 +286,239 @@ def _select_uuids(items: Any, requested: Any, name: str) -> list[Any]:
 def _assert_file_unchanged(path: Path, before: bytes) -> None:
     if path.read_bytes() != before:
         _fail(f"Refusing success: source file changed unexpectedly: {path}")
+
+
+PAD_KINDS = {"smd", "thru_hole", "np_thru_hole"}
+PAD_SHAPES = {"circle", "rect", "oval", "roundrect"}
+
+
+def _pad_spec(value: Any, name: str = "pad") -> dict[str, Any]:
+    if not isinstance(value, dict):
+        _fail(f"{name} must be an object")
+    allowed = {"number", "kind", "shape", "x_mm", "y_mm", "size_x_mm", "size_y_mm",
+               "rotation_deg", "side", "drill_x_mm", "drill_y_mm", "roundrect_ratio"}
+    extra = sorted(set(value) - allowed)
+    if extra:
+        _fail(f"{name} contains unsupported fields: {', '.join(extra)}")
+    number = value.get("number")
+    if not isinstance(number, str) or len(number) > 64:
+        _fail(f"{name}.number must be a string of at most 64 characters")
+    kind = value.get("kind")
+    if kind not in PAD_KINDS:
+        _fail(f"{name}.kind must be one of {', '.join(sorted(PAD_KINDS))}")
+    shape = value.get("shape")
+    if shape not in PAD_SHAPES:
+        _fail(f"{name}.shape must be one of {', '.join(sorted(PAD_SHAPES))}")
+    result = {"number": number, "kind": kind, "shape": shape,
+              "x_mm": _finite(value.get("x_mm"), f"{name}.x_mm"),
+              "y_mm": _finite(value.get("y_mm"), f"{name}.y_mm"),
+              "size_x_mm": _finite(value.get("size_x_mm"), f"{name}.size_x_mm"),
+              "size_y_mm": _finite(value.get("size_y_mm"), f"{name}.size_y_mm"),
+              "rotation_deg": _finite(value.get("rotation_deg", 0), f"{name}.rotation_deg"),
+              "side": value.get("side", "front"),
+              "roundrect_ratio": _finite(value.get("roundrect_ratio", 0.25), f"{name}.roundrect_ratio")}
+    if not 0 < result["size_x_mm"] <= 1000 or not 0 < result["size_y_mm"] <= 1000:
+        _fail(f"{name} pad dimensions must be > 0 and <= 1000 mm")
+    if not -36000 <= result["rotation_deg"] <= 36000:
+        _fail(f"{name}.rotation_deg must be between -36000 and 36000")
+    if result["side"] not in {"front", "back"}:
+        _fail(f"{name}.side must be front or back")
+    if not 0 <= result["roundrect_ratio"] <= 0.5:
+        _fail(f"{name}.roundrect_ratio must be between 0 and 0.5")
+    drill_x = value.get("drill_x_mm")
+    drill_y = value.get("drill_y_mm")
+    if kind == "smd":
+        if drill_x is not None or drill_y is not None:
+            _fail(f"{name} SMD pads cannot have a drill")
+        result["drill_x_mm"] = result["drill_y_mm"] = None
+    else:
+        if drill_x is None:
+            _fail(f"{name}.drill_x_mm is required for through-hole pads")
+        result["drill_x_mm"] = _finite(drill_x, f"{name}.drill_x_mm")
+        result["drill_y_mm"] = _finite(drill_y if drill_y is not None else drill_x,
+                                        f"{name}.drill_y_mm")
+        if not 0 < result["drill_x_mm"] <= result["size_x_mm"] or not 0 < result["drill_y_mm"] <= result["size_y_mm"]:
+            _fail(f"{name} drill dimensions must be > 0 and no larger than the pad")
+        if result["side"] != "front":
+            _fail(f"{name}.side applies only to SMD pads")
+    return result
+
+
+def _configure_pad(pcbnew: Any, pad: Any, spec: dict[str, Any]) -> None:
+    shape = {"circle": pcbnew.PAD_SHAPE_CIRCLE, "rect": pcbnew.PAD_SHAPE_RECT,
+             "oval": pcbnew.PAD_SHAPE_OVAL, "roundrect": pcbnew.PAD_SHAPE_ROUNDRECT}[spec["shape"]]
+    attribute = {"smd": pcbnew.PAD_ATTRIB_SMD, "thru_hole": pcbnew.PAD_ATTRIB_PTH,
+                 "np_thru_hole": pcbnew.PAD_ATTRIB_NPTH}[spec["kind"]]
+    pad.SetNumber(spec["number"])
+    pad.SetAttribute(attribute)
+    pad.SetShape(shape)
+    pad.SetSize(pcbnew.VECTOR2I_MM(spec["size_x_mm"], spec["size_y_mm"]))
+    pad.SetFPRelativePosition(pcbnew.VECTOR2I_MM(spec["x_mm"], spec["y_mm"]))
+    pad.SetOrientationDegrees(spec["rotation_deg"])
+    if spec["shape"] == "roundrect":
+        pad.SetRoundRectRadiusRatio(spec["roundrect_ratio"])
+    if spec["kind"] == "smd":
+        if spec["side"] == "front":
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+        else:
+            layers = pcbnew.LSET()
+            for layer in (pcbnew.B_Cu, pcbnew.B_Paste, pcbnew.B_Mask):
+                layers.AddLayer(layer)
+            pad.SetLayerSet(layers)
+    else:
+        pad.SetLayerSet(pcbnew.PAD.PTHMask() if spec["kind"] == "thru_hole"
+                        else pcbnew.PAD.UnplatedHoleMask())
+        pad.SetDrillShape(pcbnew.PAD_DRILL_SHAPE_CIRCLE if spec["drill_x_mm"] == spec["drill_y_mm"]
+                          else pcbnew.PAD_DRILL_SHAPE_OBLONG)
+        pad.SetDrillSize(pcbnew.VECTOR2I_MM(spec["drill_x_mm"], spec["drill_y_mm"]))
+
+
+def _set_footprint_metadata(pcbnew: Any, footprint: Any, name: str,
+                            description: Any, keywords: Any,
+                            allow_missing_courtyard: Any, allow_solder_mask_bridges: Any) -> None:
+    footprint.SetFPID(pcbnew.LIB_ID("", name))
+    if description is not None:
+        footprint.SetLibDescription(str(description))
+    if keywords is not None:
+        footprint.SetKeywords(str(keywords))
+    if allow_missing_courtyard is not None:
+        footprint.SetAllowMissingCourtyard(_is_bool(allow_missing_courtyard, "allow_missing_courtyard"))
+    if allow_solder_mask_bridges is not None:
+        footprint.SetAllowSolderMaskBridges(_is_bool(allow_solder_mask_bridges, "allow_solder_mask_bridges"))
+
+
+def _footprint_plugin(pcbnew: Any) -> Any:
+    plugin = pcbnew.PCB_IO_MGR.FindPlugin(pcbnew.PCB_IO_MGR.KICAD_SEXP)
+    if plugin is None:
+        _fail("KiCad native footprint plugin is unavailable")
+    return plugin
+
+
+def _load_footprint_file(pcbnew: Any, path: Path) -> Any:
+    footprint = _footprint_plugin(pcbnew).FootprintLoad(str(path.parent), path.stem, True)
+    if footprint is None:
+        _fail(f"KiCad could not load footprint: {path}")
+    return footprint
+
+
+def _save_footprint(pcbnew: Any, footprint: Any, output: Path) -> Any:
+    plugin = _footprint_plugin(pcbnew)
+    plugin.FootprintSave(str(output.parent), footprint)
+    if not output.is_file() or output.stat().st_size == 0:
+        _fail(f"KiCad did not create output_footprint: {output}")
+    saved = plugin.FootprintLoad(str(output.parent), output.stem, True)
+    if saved is None:
+        _fail(f"KiCad could not reopen output_footprint: {output}")
+    return saved
+
+
+def _footprint_summary(pcbnew: Any, footprint: Any, output: Path) -> dict[str, Any]:
+    attributes = {pcbnew.PAD_ATTRIB_SMD: "smd", pcbnew.PAD_ATTRIB_PTH: "thru_hole",
+                  pcbnew.PAD_ATTRIB_NPTH: "np_thru_hole"}
+    shapes = {pcbnew.PAD_SHAPE_CIRCLE: "circle", pcbnew.PAD_SHAPE_RECT: "rect",
+              pcbnew.PAD_SHAPE_OVAL: "oval", pcbnew.PAD_SHAPE_ROUNDRECT: "roundrect"}
+    pads = []
+    for index, pad in enumerate(footprint.Pads(), 1):
+        position = pad.GetFPRelativePosition()
+        size = pad.GetSize()
+        drill = pad.GetDrillSize()
+        pads.append({"index": index, "uuid": _item_uuid(pad), "number": pad.GetNumber(),
+                     "kind": attributes.get(pad.GetAttribute(), str(pad.GetAttribute())),
+                     "shape": shapes.get(pad.GetShape(), str(pad.GetShape())),
+                     "x_mm": pcbnew.ToMM(position.x), "y_mm": pcbnew.ToMM(position.y),
+                     "size_x_mm": pcbnew.ToMM(size.x), "size_y_mm": pcbnew.ToMM(size.y),
+                     "rotation_deg": pad.GetOrientationDegrees(),
+                     "drill_shape": ("slot" if pad.GetDrillShape() == pcbnew.PAD_DRILL_SHAPE_OBLONG else "circle")
+                                    if drill.x or drill.y else None,
+                     "drill_x_mm": pcbnew.ToMM(drill.x), "drill_y_mm": pcbnew.ToMM(drill.y)})
+    return {"output_footprint": str(output), "name": output.stem,
+            "description": footprint.GetLibDescription(), "keywords": footprint.GetKeywords(),
+            "pad_count": len(pads), "pads": pads,
+            "graphical_item_count": len(list(footprint.GraphicalItems())),
+            "model_count": len(list(footprint.Models()))}
+
+
+def footprint_create(request: dict[str, Any]) -> dict[str, Any]:
+    output = _output_footprint(request.get("output_footprint"))
+    name = _footprint_name(request.get("name"))
+    if output.stem != name:
+        _fail("output_footprint filename must match name")
+    raw_pads = request.get("pads")
+    if not isinstance(raw_pads, list) or not 1 <= len(raw_pads) <= 10000:
+        _fail("pads must contain between 1 and 10000 pad objects")
+    pads = [_pad_spec(value, f"pads[{index}]") for index, value in enumerate(raw_pads)]
+    pcbnew = _load_pcbnew()
+    board = pcbnew.BOARD()
+    footprint = pcbnew.FOOTPRINT(board)
+    footprint.SetReference("REF**")
+    footprint.SetValue(name)
+    _set_footprint_metadata(pcbnew, footprint, name, request.get("description", ""),
+                            request.get("keywords", ""), request.get("allow_missing_courtyard", False),
+                            request.get("allow_solder_mask_bridges", False))
+    for spec in pads:
+        pad = pcbnew.PAD(footprint)
+        _configure_pad(pcbnew, pad, spec)
+        footprint.Add(pad)
+    saved = _save_footprint(pcbnew, footprint, output)
+    return _footprint_summary(pcbnew, saved, output)
+
+
+def _selected_pad(footprint: Any, number: str, occurrence: int) -> Any:
+    matches = [pad for pad in footprint.Pads() if pad.GetNumber() == number]
+    if occurrence > len(matches):
+        _fail(f"Pad {number!r} occurrence {occurrence} was not found")
+    return matches[occurrence - 1]
+
+
+def footprint_edit(request: dict[str, Any]) -> dict[str, Any]:
+    source = _input_footprint(request.get("input_footprint"))
+    output = _output_footprint(request.get("output_footprint"), source)
+    name = _footprint_name(request.get("name", output.stem))
+    if output.stem != name:
+        _fail("output_footprint filename must match name")
+    operations = request.get("operations")
+    if not isinstance(operations, list) or not 1 <= len(operations) <= 10000:
+        _fail("operations must contain between 1 and 10000 edits")
+    original = source.read_bytes()
+    pcbnew = _load_pcbnew()
+    footprint = _load_footprint_file(pcbnew, source)
+    counts = {"added": 0, "replaced": 0, "deleted": 0}
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict):
+            _fail(f"operations[{index}] must be an object")
+        kind = operation.get("kind")
+        allowed = {"kind", "pad"} if kind == "add" else {"kind", "number", "occurrence", "pad"}
+        if kind == "delete":
+            allowed.remove("pad")
+        extra = sorted(set(operation) - allowed)
+        if extra:
+            _fail(f"operations[{index}] contains unsupported fields: {', '.join(extra)}")
+        if kind == "add":
+            pad = pcbnew.PAD(footprint)
+            _configure_pad(pcbnew, pad, _pad_spec(operation.get("pad"), f"operations[{index}].pad"))
+            footprint.Add(pad)
+            counts["added"] += 1
+            continue
+        if kind not in {"replace", "delete"}:
+            _fail(f"operations[{index}].kind must be add, replace or delete")
+        number = operation.get("number")
+        if not isinstance(number, str) or len(number) > 64:
+            _fail(f"operations[{index}].number must be a string of at most 64 characters")
+        occurrence = _is_int(operation.get("occurrence", 1), f"operations[{index}].occurrence", minimum=1)
+        pad = _selected_pad(footprint, number, occurrence)
+        if kind == "replace":
+            _configure_pad(pcbnew, pad, _pad_spec(operation.get("pad"), f"operations[{index}].pad"))
+            counts["replaced"] += 1
+        else:
+            footprint.RemoveNative(pad)
+            counts["deleted"] += 1
+    _set_footprint_metadata(pcbnew, footprint, name, request.get("description"), request.get("keywords"),
+                            request.get("allow_missing_courtyard"), request.get("allow_solder_mask_bridges"))
+    footprint.SetValue(name)
+    saved = _save_footprint(pcbnew, footprint, output)
+    _assert_file_unchanged(source, original)
+    return {**_footprint_summary(pcbnew, saved, output), "changes": counts,
+            "source_unchanged": True, "input_footprint": str(source)}
 
 
 def _settings(value: Any) -> dict[str, bool]:
@@ -1345,6 +1610,8 @@ def rf_tools_apply(request: dict[str, Any]) -> dict[str, Any]:
 
 
 OPERATIONS = {
+    "footprint_create": footprint_create,
+    "footprint_edit": footprint_edit,
     "replicate_discover": replicate_discover,
     "replicate_layout": replicate_layout,
     "place_footprints": place_footprints,
