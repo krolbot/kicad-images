@@ -1,0 +1,11 @@
+--- a/3rdparty/plugins/com_github_TheJigsApp_kicad-parts-placer-pcm/kicad_parts_placer_.py
++++ b/3rdparty/plugins/com_github_TheJigsApp_kicad-parts-placer-pcm/kicad_parts_placer_.py
+@@ -133,7 +133,7 @@
+         side == "back" and module.GetLayerName() == "F.Cu"
+     ):
+         _log.debug("Flip")
+-        module.Flip(module.GetCenter(), aFlipLeftRight=True)
++        module.Flip(module.GetCenter(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+ 
+     return board
+ 

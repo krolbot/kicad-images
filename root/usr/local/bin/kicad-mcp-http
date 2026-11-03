@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+if [ "$(id -u)" = 0 ]; then
+  exec /command/s6-setuidgid abc /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http.py "$@"
+fi
+exec /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http.py "$@"

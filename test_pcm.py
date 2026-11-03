@@ -172,8 +172,9 @@ class SourceContractTests(unittest.TestCase):
             self.assertTrue(spec["version"])
             self.assertTrue(pcm.compatible(spec, version), spec["identifier"])
         recipe = (root / "Dockerfile").read_text()
-        self.assertEqual(len(re.findall(r"^FROM ", recipe, re.M)), 2)
+        self.assertEqual(len(re.findall(r"^FROM ", recipe, re.M)), 3)
         self.assertIn("AS freerouting-build", recipe)
+        self.assertIn("AS ngspice-build", recipe)
         self.assertIn("linuxserver/baseimage-selkies:ubunturesolute", recipe)
         self.assertIn(f"ARG KICAD_PACKAGE_VERSION={version}~ubuntu26.04.1", recipe)
         self.assertIn(f"KICAD_VERSION={version}", recipe)
@@ -183,8 +184,14 @@ class SourceContractTests(unittest.TestCase):
         self.assertFalse((root / "Dockerfile.gui").exists())
         self.assertIn("requirements-mcp.txt", recipe)
         self.assertIn("pcm.py build", recipe)
+        self.assertIn("pip install --no-cache-dir --no-compile", recipe)
+        self.assertIn("kibot --help-output gerber", recipe)
+        self.assertIn("rm -rf /tmp/org.kicad.kicad /tmp/kicad /tmp/.X11-unix", recipe)
+        self.assertIn("install -d -m 1777 -o root -g root /tmp/.X11-unix", recipe)
+        for directory in ["/config/.config/kicad", "/config/.cache", "/config/.local/share/kicad"]:
+            self.assertIn(f'"{directory}"', recipe)
         requirements = (root / "requirements-tools.txt").read_text().splitlines()
-        expected = {"kikit", "pcbdraw", "skidl", "wireviz", "kicost", "kibot", "kiauto", "kidiff", "kibom", "setuptools"}
+        expected = {"kikit", "pcbdraw", "skidl", "wireviz", "kicost", "kibot", "kiauto", "kidiff", "kibom", "pyclipper", "setuptools"}
         self.assertEqual({line.split("==")[0] for line in requirements if line and not line.startswith("#")}, expected)
         self.assertTrue(all(re.fullmatch(r"[a-z0-9_-]+==[0-9.]+", line)
                             for line in requirements if line and not line.startswith("#")))

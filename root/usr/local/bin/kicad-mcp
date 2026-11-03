@@ -3,4 +3,4 @@ set -eu
 # GUI plugins need the tools environment; MCP keeps its own protocol dependencies.
 unset PYTHONPATH
 export PYTHONNOUSERSITE=1
-exec /opt/kicad-mcp/bin/mcp-server-kicad "$@"
+exec /opt/kicad-mcp/bin/python /usr/local/share/kicad/toolkit_mcp.py "$@"

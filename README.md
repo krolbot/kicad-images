@@ -1,14 +1,14 @@
 # KiCad toolkit
 
-Один контейнер: браузерный KiCad, MCP по stdio, официальный `kicad-cli`, инструменты автоматизации и дополнения PCM. Отдельный MCP-контейнер больше не нужен.
+Один образ: браузерный KiCad, MCP по stdio или аутентифицированному Streamable HTTP, официальный `kicad-cli`, инструменты автоматизации и дополнения PCM. Для HTTP тот же образ запускается отдельным минимально привилегированным сервисом; версии CAD и MCP не расходятся.
 
 ## Состояние
 
 Подготовлен единый `Dockerfile` с Freerouting 2.5.0 и защитой исходной меди при выборочном импорте; изменения проверяются без автоматической сборки и запуска CAD-образа. Публикация нового монолитного образа запускается **только вручную** через GitHub Actions → **KiCad toolkit** → **Run workflow**. Наличие исходников не означает, что новый тег уже опубликован.
 
-Тег следующей сборки: `ghcr.io/krolbot/kicad-gui:10.0.7-0.21.1-fr2.5.0-tools6`. Каждая сборка также публикует `sha-<полный SHA коммита>` и OCI-метку `org.opencontainers.image.revision`.
+Тег следующей сборки: `ghcr.io/krolbot/kicad-gui:10.0.8-0.21.1-fr2.5.0-tools9`. Каждая сборка также публикует `sha-<полный SHA коммита>` и OCI-метку `org.opencontainers.image.revision`.
 
-Основа — LinuxServer.io Selkies на Ubuntu 26.04, закреплённая по digest. KiCad и штатные библиотеки устанавливаются из [официального PPA KiCad 10](https://www.kicad.org/download/linux-distros/#_ubuntu) с точной версией пакетов `10.0.7~ubuntu26.04.1`. Ключ PPA включён в `apt/keyrings/kicad.asc`; его отпечаток `FDA854F61C4D0D9572BB95E5245D5502FAD7A805` и подпись индекса проверены. APT использует отдельный `Signed-By`, без отключения проверки подписей. GUI, CLI, Python `pcbnew` и MCP используют **один KiCad 10.0.7**. Браузерный рабочий стол запускает менеджер KiCad; по умолчанию выбран X11, Docker внутри контейнера отключён. Старые раздельные теги остаются историческими сборками.
+Основа — LinuxServer.io Selkies на Ubuntu 26.04, закреплённая по digest. KiCad и штатные библиотеки устанавливаются из [официального PPA KiCad 10](https://www.kicad.org/download/linux-distros/#_ubuntu) с точной версией пакетов `10.0.8~ubuntu26.04.1`. Ключ PPA включён в `apt/keyrings/kicad.asc`; его отпечаток `FDA854F61C4D0D9572BB95E5245D5502FAD7A805` и подпись индекса проверены. APT использует отдельный `Signed-By`, без отключения проверки подписей. GUI, CLI, Python `pcbnew` и MCP используют **один KiCad 10.0.8**. Браузерный рабочий стол запускает менеджер KiCad; по умолчанию выбран X11, Docker внутри контейнера отключён. Старые раздельные теги остаются историческими сборками.
 
 ## Состав
 
@@ -28,7 +28,7 @@ KiCost может обращаться к поставщикам; отсутст
 Точные идентификаторы, версии, ограничения KiCad, URL и SHA-256: [`addons.lock.json`](addons.lock.json). Источник — [официальные метаданные KiCad](https://gitlab.com/kicad/addons/metadata); Espressif закреплён по официальному архиву производителя. Все 31 архива были скачаны, проверены по SHA-256 и безопасно распакованы при проверке исходников.
 
 - Производство и варианты: KiKit frontend 1.6.0, InteractiveHtmlBom 2.12.0, KiVar 0.5.6, Gerber Zipper 2 2.0.7, prefab-gate 0.2.0.
-- Размещение: Replicate Layout 5.0.1, Place Footprints 5.0.0, Testpoints 0.1.11, Parts Placer 0.1.14, PosOrient 2.0.0, Component Position Exporter 1.0.1.
+- Размещение: Replicate Layout 5.0.1, Place Footprints 5.0.0, Testpoints 0.1.11, Parts Placer 0.1.14 с точечным [исправлением вызова Flip для KiCad 10](patches/parts-placer-kicad10.patch), PosOrient 2.0.0, Component Position Exporter 1.0.1. Архив Parts Placer проверяется по исходному SHA-256, затем применяется явный патч; алгоритм размещения не заменён.
 - Плата и соединения: Localize Dependencies 1.0.1, Via Stitching 4.0.0, ViaFence 1.1.0, HoleFinder 1.1, Fanout Tool 1.0.0, RF-Tools 1.3.2, pcb-action-tools 1.0.7, NCCM 0.1.3, Z0 Field Solver 0.3.0.
 - Оформление и документация: KiBuzzard 1.7.0, Kobee Studio 1.4.1, Silk Reference Tools 2.1.0, KiNotes 1.5.2, Pinout Image Generator 1.4.0, Pinout Generator 1.2.
 - Библиотеки: KiKit Library 1.6.0, Espressif 3.2.1, SparkFun 10.0.0, Arduino Modules 4.2.0, FabLib 0.0.3.
@@ -63,15 +63,57 @@ KiKit PCM frontend и библиотека имеют собственную н�
 
 Один контейнер с постоянными `/config` и `/projects` запускается как обычный LinuxServer KiCad. Браузерный интерфейс наследует настройки и порты базового образа. Не выставляйте рабочий стол в Интернет без защищённого доступа.
 
-MCP запускается внутри **этого же** контейнера:
+MCP по stdio запускается внутри GUI-контейнера:
 
 ```sh
 docker exec --user abc --workdir /projects -i kicad /usr/local/bin/kicad-mcp
 ```
 
-Имя `kicad` здесь — имя вашего контейнера. Для stdio не добавляйте `-t`. Отдельного сетевого порта MCP и Docker socket внутри CAD-контейнера не требуется. Команда `docker exec` выполняется на Docker-хосте, а не из другого контейнера с выданным ему сокетом.
+Штатное имя `mcp-server-kicad` также ведёт в расширенный сервер: существующие клиенты не обходят новые команды.
 
-CLI-инструменты доступны в том же контейнере: `kicad-cli`, `kikit`, `pcbdraw`, `kibot`, `wireviz`, `kicost`, `freerouting`, `ibom`. Плагины GUI **не становятся MCP-методами автоматически**; MCP 0.21.1 сохраняет собственный зарегистрированный набор инструментов. Экспорт KiBot/KiKit или GUI-действие — отдельная операция, а не обещанная возможность MCP.
+Имя `kicad` здесь — имя вашего контейнера. Для stdio не добавляйте `-t`. Docker socket внутри CAD-контейнера не требуется. Команда `docker exec` выполняется на Docker-хосте, а не из другого контейнера с выданным ему сокетом.
+
+Для постоянного Streamable HTTP запускайте **тот же digest образа** отдельным сервисом с переопределённой точкой входа:
+
+```yaml
+user: "1000:1000"
+entrypoint: ["/usr/local/bin/kicad-mcp-http"]
+security_opt:
+  - no-new-privileges:true
+cap_drop:
+  - ALL
+environment:
+  KICAD_MCP_BEARER_TOKEN: ${KICAD_MCP_BEARER_TOKEN:?required}
+  KICAD_MCP_ALLOWED_HOSTS: kicad-mcp.example.com,kicad-mcp-http:8000
+  KICAD_MCP_ALLOWED_ORIGINS: https://kicad-mcp.example.com
+```
+
+Сервис слушает `0.0.0.0:8000`, публикует MCP на `/mcp` и отвергает запуск без `KICAD_MCP_BEARER_TOKEN`. Все HTTP-запросы требуют единственный точный заголовок `Authorization: Bearer …`; токен не передаётся в аргументах процесса и не входит в образ. Встроенная защита от DNS rebinding принимает только явно заданные `Host` и `Origin`. Наружу сервис следует выводить через HTTPS reverse proxy, не через Docker `ports`.
+
+CLI-инструменты доступны в том же контейнере: `kicad-cli`, `kikit`, `pcbdraw`, `kibot`, `wireviz`, `kicost`, `freerouting`, `ibom`.
+
+### Дополнительные MCP-команды
+
+Адаптер `toolkit_mcp.py` сохраняет все **109 штатных команд** MCP 0.21.1 и добавляет **12 команд**:
+
+- `get_toolkit_status` — версии установленных движков и закреплённых PCM-пакетов.
+- `manufacture_pcb` — KiBot: Gerber, Excellon, координаты компонентов и PDF; `outputs` выбирает нужные виды.
+- `generate_interactive_bom` — автономный HTML InteractiveHtmlBom с данными платы, без запуска браузера.
+- `panelize_pcb` — сетка KiKit с перемычками; размеры, зазоры и способ отделения заданы типизированными параметрами.
+- `discover_replication` — иерархия выбранного опорного компонента, допустимые назначения и параметры Replicate Layout.
+- `replicate_layout` — повтор размещения/трассировки через **Replicate Layout 5.0.1**. Используйте `level_index` и точные `destination_sheets` из предварительного обнаружения.
+- `place_footprints` — линейное, круговое или матричное размещение через **Place Footprints 5.0.0**. `references` задаёт порядок; `anchor_ref` должен входить в список.
+- `place_parts` — координаты, поворот, сторона и необязательная группа через **Parts Placer 0.1.14**. Входные координаты декартовы: движок преобразует `(x,y)` в `(origin_x+x, origin_y-y)` в координатах KiCad, миллиметры.
+- `scan_project_dependencies` — список зависимостей и ключей выбора через **Localize Dependencies 1.0.1**.
+- `localize_project_dependencies` — локализация выбранных зависимостей **на копии проекта**, при необходимости ZIP. Штатные библиотеки включаются только явно: `include_standard=true`.
+- `get_board_edit_state` — SHA-256 и native-состояние footprint/pad/track/via по UUID; фильтры по точным net/reference, при необходимости полный DRC с разрывами.
+- `edit_board_copper_batch` — ограниченный пакет move/remove-by-UUID/add trace/via и необязательный `autoroute_pcb(nets=...)`. Элемент `moves` имеет вид `{"reference":"J1","x_mm":100.45,"y_mm":75.5,"rotation_deg":-90,"layer":"F.Cu"}`; `layer` необязателен, принимает только `F.Cu`/`B.Cu` и при смене стороны вызывает штатный native flip KiCad до установки итогового угла. Пакеты без `layer` сохраняют прежнее поведение. Сначала выполняется native dry-run на временной копии, refill/reopen, полный DRC и проверка защищённых UUID/net/pad; запись в исходный PCB требует повторного идентичного вызова с `dry_run=false`, CAS `expected_sha256` и выданным `confirmation_token`.
+
+Все пути абсолютные, внутри `/projects`; выходной `output_dir` должен быть новым. Существующий результат не перезаписывается. Платы/проекты на входе сохраняются; CAD-операции создают новую плату с копиями соседних схем и файла правил `.kicad_pro`, локализация — подкаталог с копией проекта. Исключение — явно подтверждённый `edit_board_copper_batch`: после успешного dry-run он атомарно заменяет тот же PCB, только если его SHA-256 не изменился. Его временный кандидат, результаты scoped autoroute и DRC удаляются после вызова; новый активный проект не остаётся. Параметры опубликованы в MCP JSON Schema; произвольный shell, Python или конфигурация KiBot от клиента не принимаются. Новые команды используют закреплённые движки из образа, независимо от сохранённых пользовательских версий GUI-плагинов.
+
+Ограничения Localize Dependencies сохранены: сканируются CAD-файлы верхнего уровня каталога; символы локализуются целыми библиотеками, посадочные места — по выбранным элементам. Входной проект не должен содержать симлинков. Источники зависимостей ограничены `/projects` и библиотеками образа (`/usr/share/kicad`, `/opt/kicad-addons`); произвольные файлы конфигурации контейнера в архив не попадают. ZIP — стандартная упаковка уже локализованной копии, а не отдельная функция плагина.
+
+Это интеграция указанного набора, **не универсальный вызов всех GUI-плагинов**. Сохранённое состояние файлов, несохранённая плата в GUI и IPC — разные состояния. Для электрической проверки результата используйте штатные ERC/DRC; успешный выпуск файлов не означает пригодность платы к производству.
 
 Владелец каталога `/projects` должен соответствовать выбранным `PUID`/`PGID`. Init hook не меняет владельцев рабочих проектов. Версии KiCad, штатных библиотек, основных Python-программ и архивы закреплены; остальные зависимости APT и Python разрешаются из выбранных репозиториев при сборке, поэтому побитовая воспроизводимость сборки не заявляется.
 
@@ -80,9 +122,11 @@ CLI-инструменты доступны в том же контейнере:
 Без Docker и запуска KiCad:
 
 ```sh
-python3 -m unittest -v test_pcm.py
-python3 -m compileall -q pcm.py mcp_smoke.py
-sh -n root/usr/local/bin/kicad-mcp root/usr/local/bin/freerouting root/usr/local/bin/ibom
+python3 -m venv .venv
+.venv/bin/pip install --no-compile -r requirements-mcp.txt
+.venv/bin/python -m unittest -v
+.venv/bin/python -m compileall -q pcm.py toolkit_mcp.py toolkit_native.py mcp_http.py mcp_smoke.py mcp_http_smoke.py mcp_toolkit_smoke.py
+sh -n root/usr/local/bin/kicad-mcp root/usr/local/bin/kicad-mcp-http root/usr/local/bin/freerouting root/usr/local/bin/ibom
 bash -n root/custom-cont-init.d/50-kicad-toolkit.sh
 ```
 
@@ -98,6 +142,6 @@ python3 pcm.py build addons.lock.json /path/to/empty/bundle
 docker build -t kicad-toolkit .
 ```
 
-При реальной сборке `mcp_smoke.py` требует точного совпадения версий CLI и системного `pcbnew` с `KICAD_VERSION`, затем открывает MCP-сессию и проверяет основные методы, версию KiCad и чтение стандартного символа. Проверки исходников, SHA-256 и зависимостей **не подтверждают** запуск браузера, действия GUI-плагинов, трассировку или расчёт реальной платы. Эти проверки требуют отдельного разрешённого запуска образа.
+При реальной сборке `mcp_http_smoke.py` сначала требует отказ `401` без токена, затем выполняет настоящие `initialize`, `tools/list` и `tools/call` по Streamable HTTP с Bearer-токеном. `mcp_toolkit_smoke.py` выполняет настоящие `tools/list`/`tools/call` всех десяти новых команд: проверяет ненулевые файлы выпуска, HTML BOM, панель, три способа размещения, геометрию репликации на закреплённом upstream-проекте и локализацию с ZIP. Тестовые исходники проверяются на неизменность; отрицательные запросы не должны оставлять результат. `native_ipc_smoke.py` отдельно запускает настоящий Pcbnew с временным профилем и требует ответ `kipy.KiCad().get_version()` той же версии. `mcp_autoroute_smoke.py` сохраняет проверку Freerouting. `mcp_smoke.py` требует точного совпадения версий CLI и системного `pcbnew` с `KICAD_VERSION`, затем открывает MCP-сессию и проверяет основные методы, версию KiCad и чтение стандартного символа. Проверки исходников, SHA-256 и зависимостей **не подтверждают** запуск браузера, действия GUI-плагинов, трассировку или расчёт реальной платы. Эти проверки требуют отдельного разрешённого запуска образа.
 
 Автоматического развёртывания нет. Конфигурация серверов, учётные данные и рабочие проекты в репозиторий не входят. Публичность GHCR настраивается отдельно; новый тег нельзя считать опубликованным до успешного ручного задания и проверки реестра.
