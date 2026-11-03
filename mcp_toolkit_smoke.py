@@ -158,9 +158,12 @@ async def main():
                         ]})
                     created_mod = next(p for p in artifacts(created) if p.suffix == '.kicad_mod')
                     created_pads = created['operation']['pads']
-                    assert [pad['kind'] for pad in created_pads] == ['smd', 'thru_hole', 'np_thru_hole']
-                    assert created_pads[1]['drill_shape'] == 'circle'
-                    assert created_pads[2]['drill_shape'] == 'slot'
+                    created_by_number = {pad['number']: pad for pad in created_pads}
+                    assert len(created_pads) == 3 and created_by_number['1']['kind'] == 'smd'
+                    assert created_by_number['2']['kind'] == 'thru_hole'
+                    assert created_by_number['']['kind'] == 'np_thru_hole'
+                    assert created_by_number['2']['drill_shape'] == 'circle'
+                    assert created_by_number['']['drill_shape'] == 'slot'
                     source_footprint = Path('/usr/share/kicad/footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod')
                     source_before = hashlib.sha256(source_footprint.read_bytes()).hexdigest()
                     edited = await checked(session, 'edit_footprint', {
