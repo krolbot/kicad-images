@@ -83,6 +83,9 @@ def prepare_board() -> None:
 
 
 def main() -> None:
+    if os.environ.get("MCP_HTTP_SMOKE_CLIENT_ONLY") == "1":
+        asyncio.run(authenticated_probe())
+        return
     prepare_board()
     env = os.environ.copy()
     env.update({
