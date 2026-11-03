@@ -2,7 +2,10 @@
 set -eu
 unset PYTHONPATH
 export PYTHONNOUSERSITE=1
+set -- /usr/bin/xvfb-run -a -e /dev/stderr \
+  -s "-screen 0 1280x720x24 -nolisten tcp" \
+  /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http.py "$@"
 if [ "$(id -u)" = 0 ]; then
-  exec /command/s6-setuidgid abc /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http.py "$@"
+  exec /command/s6-setuidgid abc "$@"
 fi
-exec /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http.py "$@"
+exec "$@"
