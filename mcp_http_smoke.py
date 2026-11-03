@@ -112,7 +112,7 @@ def main() -> None:
             os.killpg(server.pid, signal.SIGKILL)
             server.communicate()
         shutil.rmtree(BOARD_DIR, ignore_errors=True)
-    if server.returncode not in (0, -15):
+    if server.returncode not in (0, -15, 128 + signal.SIGTERM):
         raise RuntimeError(f"MCP HTTP server exited with {server.returncode}")
 
 
