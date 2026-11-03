@@ -41,19 +41,70 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Build candidate image locally
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           # Reuse the existing public package; no new private GHCR package.
           tags: |
-            ghcr.io/krolbot/kicad-gui:10.0.8-0.21.1-fr2.5.0-tools10
+            ghcr.io/krolbot/kicad-gui:10.0.8-0.21.1-fr2.5.0-tools11
             ghcr.io/krolbot/kicad-gui:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/krolbot/kicad-images
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=kicad-unified
           cache-to: type=gha,mode=max,scope=kicad-unified
-          provenance: true
+          provenance: false
+      - name: Run HTTP MCP as PID 1 and fill a real zone
+        env:
+          IMAGE: ghcr.io/krolbot/kicad-gui:10.0.8-0.21.1-fr2.5.0-tools11
+        run: |
+          set -euo pipefail
+          name=kicad-http-pid1-smoke
+          projects="$RUNNER_TEMP/kicad-http-pid1-smoke"
+          cleanup() {
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            rm -rf "$projects"
+          }
+          trap cleanup EXIT
+          mkdir -p "$projects/http-mcp-smoke"
+          chmod 0777 "$projects" "$projects/http-mcp-smoke"
+          docker run --rm --user 1000:1000 --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            -e HOME=/tmp/kicad-home \
+            -e XDG_CONFIG_HOME=/tmp/kicad-home/.config \
+            -e XDG_CACHE_HOME=/tmp/kicad-home/.cache \
+            -e KICAD_CONFIG_HOME=/tmp/kicad-home/.config/kicad \
+            -v "$projects:/projects" --entrypoint /bin/sh "$IMAGE" -c \
+            'xvfb-run -a -e /dev/stderr /usr/bin/python3 /usr/local/share/kicad/mcp_board_batch_fixture.py /projects/http-mcp-smoke/fixture.kicad_pcb & child=$!; wait "$child"'
+          docker run -d --name "$name" --network none --user 1000:1000 --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            -e HOME=/tmp/kicad-home \
+            -e XDG_CONFIG_HOME=/tmp/kicad-home/.config \
+            -e XDG_CACHE_HOME=/tmp/kicad-home/.cache \
+            -e KICAD_CONFIG_HOME=/tmp/kicad-home/.config/kicad \
+            -e KICAD_MCP_BEARER_TOKEN=build-only-mcp-token \
+            -e KICAD_MCP_ALLOWED_HOSTS=127.0.0.1:18080 \
+            -v "$projects:/projects" \
+            --entrypoint /usr/local/bin/kicad-mcp-http "$IMAGE" \
+            --host 127.0.0.1 --port 18080
+          for _ in $(seq 1 30); do
+            if docker exec "$name" python3 -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 1).close()'; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$name" python3 -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 1).close()'
+          docker exec -e MCP_HTTP_SMOKE_CLIENT_ONLY=1 "$name" \
+            /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http_smoke.py
+      - name: Publish validated image
+        run: |
+          set -euo pipefail
+          docker push "ghcr.io/krolbot/kicad-gui:sha-${GITHUB_SHA}"
+          docker push ghcr.io/krolbot/kicad-gui:10.0.8-0.21.1-fr2.5.0-tools11
