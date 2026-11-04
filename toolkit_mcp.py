@@ -1,20 +1,24 @@
 """Typed local-toolkit operations registered beside the pinned upstream MCP tools."""
+import base64
 from contextlib import contextmanager
 import hashlib
 import importlib.metadata
 import json
 import math
+import mimetypes
 import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 from typing import Annotated, Iterator, Literal
+from urllib.parse import quote
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ToolAnnotations
+from mcp.types import BlobResourceContents, EmbeddedResource, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from toolkit_native import REPLICATION_DEFAULTS
@@ -23,6 +27,7 @@ import mcp_board_batch as board_batch
 from mcp_server_kicad import _cst, server as upstream
 
 PROJECT_ROOT = Path("/projects")
+MAX_PROJECT_FILE_BYTES = 16 * 1024 * 1024
 TOOLS_PYTHON = "/opt/kicad-tools/bin/python"
 NATIVE_RUNNER = Path(__file__).with_name("toolkit_native.py")
 IPC_RUNNER = Path(__file__).with_name("toolkit_ipc.py")
@@ -96,6 +101,7 @@ mcp = MCPServer(
       "scan_project_dependencies precedes localize_project_dependencies, which works only on a project copy. "
       "export_testpoints, generate_pinout, generate_pinout_image, generate_kibuzzard_footprint, apply_variant, solve_trace_impedance and run_prefab_gate expose their pinned addon engines. "
       "create_footprint and edit_footprint author native .kicad_mod pads, circular drills and oval slots. "
+      "download_project_file returns an exact base64 MCP resource for one regular file under /projects, up to 16 MiB. "
       "get_board_edit_state precedes CAS-guarded edit_board_copper_batch, whose dry run is required before apply. "
       "Toolkit operations accept absolute paths within /projects, preserve their inputs and require a NEW output directory. "
       "An existing output is an error, not permission to replace it. Generated artifacts are not an electrical approval; use run_erc/run_drc.",
@@ -117,6 +123,54 @@ def _path(value: str, suffix: str | None = None, *, new: bool = False, directory
     if suffix and resolved.suffix != suffix:
         raise ToolError(f"Expected a {suffix} file: {path}")
     return resolved
+
+
+def _read_project_file(value: str) -> tuple[Path, bytes]:
+    """Read one regular project file without following any symlink in its path."""
+    path = Path(value)
+    if not path.is_absolute():
+        raise ToolError("Use an absolute path within /projects")
+    try:
+        relative = path.relative_to(PROJECT_ROOT)
+    except ValueError as exc:
+        raise ToolError("The path must be inside /projects") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ToolError("The path must name one file directly inside /projects without traversal")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    directory_fd = -1
+    file_fd = -1
+    try:
+        directory_fd = os.open(PROJECT_ROOT, directory_flags)
+        for part in relative.parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(relative.name, file_flags, dir_fd=directory_fd)
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ToolError("Only regular project files can be downloaded")
+        if before.st_size > MAX_PROJECT_FILE_BYTES:
+            raise ToolError(
+                f"Project file is {before.st_size} bytes; the download limit is {MAX_PROJECT_FILE_BYTES} bytes"
+            )
+        with os.fdopen(file_fd, "rb", closefd=True) as source:
+            file_fd = -1
+            content = source.read(MAX_PROJECT_FILE_BYTES + 1)
+            after = os.fstat(source.fileno())
+        if len(content) != before.st_size or after.st_size != before.st_size or after.st_mtime_ns != before.st_mtime_ns:
+            raise ToolError("The project file changed while it was being downloaded; retry the request")
+        return PROJECT_ROOT / relative, content
+    except ToolError:
+        raise
+    except OSError as exc:
+        raise ToolError("Project file does not exist, is inaccessible, or its path contains a symlink") from exc
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if directory_fd >= 0:
+            os.close(directory_fd)
 
 
 def _execute(command: list[str], cwd: Path, timeout: int = 180, request: dict[str, object] | None = None) -> str:
@@ -222,6 +276,36 @@ def get_toolkit_status() -> dict[str, JsonValue]:
             "mcp": importlib.metadata.version("mcp-server-kicad"), "engines": json.loads(versions),
             "plugins": {p["package"]["identifier"]: p["current_version"] for p in packages},
             "addon_coverage": ADDON_COVERAGE, "engine_coverage": ENGINE_COVERAGE}
+
+
+@mcp.tool(annotations=_READ)
+def download_project_file(path: str) -> EmbeddedResource:
+    """Download one regular file under /projects as an exact base64 MCP resource.
+
+    The whole path must be symlink-free. Files larger than 16 MiB are rejected so one
+    Streamable HTTP response cannot consume unbounded memory. The resource metadata includes
+    the exact byte count and SHA-256 digest for client-side verification.
+    """
+    source, content = _read_project_file(path)
+    relative = source.relative_to(PROJECT_ROOT)
+    mime_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+    metadata: dict[str, JsonValue] = {
+        "path": str(source),
+        "filename": source.name,
+        "bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "encoding": "base64",
+        "max_bytes": MAX_PROJECT_FILE_BYTES,
+    }
+    return EmbeddedResource(
+        resource=BlobResourceContents(
+            uri=f"kicad-project:///{quote(relative.as_posix(), safe='/')}",
+            mime_type=mime_type,
+            blob=base64.b64encode(content).decode("ascii"),
+            _meta=metadata,
+        ),
+        _meta=metadata,
+    )
 
 
 @mcp.tool(annotations=_READ)

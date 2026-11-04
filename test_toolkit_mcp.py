@@ -1,5 +1,6 @@
 """Runnable source-level boundaries; real KiCad engines are exercised by image smoke."""
 import asyncio
+import base64
 import hashlib
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 import toolkit_mcp as toolkit
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource
 
 
 class ToolkitBoundaries(unittest.TestCase):
@@ -39,6 +41,59 @@ class ToolkitBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(ToolError, "already exists"):
             toolkit.generate_interactive_bom(str(self.board), str(existing))
         self.assertEqual(sentinel.read_text(), "user content")
+
+    def test_project_file_download_is_exact_bounded_and_symlink_free(self):
+        payload = b"\x00KiCad MCP download\xff\n"
+        source = self.project / "space name.bin"
+        source.write_bytes(payload)
+        result = toolkit.download_project_file(str(source))
+        self.assertIsInstance(result.resource, BlobResourceContents)
+        resource = result.resource
+        assert isinstance(resource, BlobResourceContents)
+        self.assertEqual(base64.b64decode(resource.blob, validate=True), payload)
+        self.assertEqual(resource.uri, "kicad-project:///project/space%20name.bin")
+        self.assertEqual(resource.mime_type, "application/octet-stream")
+        self.assertEqual(result.meta, resource.meta)
+        assert result.meta is not None
+        self.assertEqual(result.meta["path"], str(source))
+        self.assertEqual(result.meta["bytes"], len(payload))
+        self.assertEqual(result.meta["sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(result.meta["encoding"], "base64")
+
+        wire_result = asyncio.run(toolkit.mcp.call_tool("download_project_file", {"path": str(source)}))
+        assert isinstance(wire_result, CallToolResult)
+        self.assertFalse(wire_result.is_error)
+        self.assertEqual(len(wire_result.content), 1)
+        self.assertIsInstance(wire_result.content[0], EmbeddedResource)
+        wire_block = wire_result.content[0]
+        assert isinstance(wire_block, EmbeddedResource)
+        wire_resource = wire_block.resource
+        assert isinstance(wire_resource, BlobResourceContents)
+        self.assertEqual(base64.b64decode(wire_resource.blob, validate=True), payload)
+
+        outside = self.root.parent / "download-outside.bin"
+        outside.write_bytes(payload)
+        self.addCleanup(outside.unlink, missing_ok=True)
+        file_link = self.project / "file-link.bin"
+        file_link.symlink_to(source)
+        directory_link = self.root / "directory-link"
+        directory_link.symlink_to(self.project, target_is_directory=True)
+        rejected = [
+            "relative.bin",
+            str(outside),
+            str(self.root),
+            str(self.project),
+            str(file_link),
+            str(directory_link / source.name),
+            str(self.project / ".." / "project" / source.name),
+        ]
+        for value in rejected:
+            with self.subTest(path=value), self.assertRaises(ToolError):
+                toolkit.download_project_file(value)
+
+        with patch.object(toolkit, "MAX_PROJECT_FILE_BYTES", len(payload) - 1):
+            with self.assertRaisesRegex(ToolError, "download limit"):
+                toolkit.download_project_file(str(source))
 
     def test_failed_backend_preserves_input_and_removes_own_output(self):
         before = hashlib.sha256(self.board.read_bytes()).digest()
@@ -153,7 +208,7 @@ class ToolkitBoundaries(unittest.TestCase):
                  "insert_kibuzzard_footprint", "manage_project_notes", "run_pcb_action_tool",
                  "apply_via_fence", "run_rf_tool", "separate_pcb", "create_stencil", "present_pcb",
                  "search_skidl_parts", "convert_netlist_to_skidl", "generate_offline_cost_spreadsheet",
-                 "create_footprint", "edit_footprint"}
+                 "create_footprint", "edit_footprint", "download_project_file"}
         self.assertEqual(set(actual) - original, added)
         kivar = toolkit.ADDON_COVERAGE["de.markh.kivar"]
         viafence = toolkit.ADDON_COVERAGE["com.github.ozzysv.viafence"]
@@ -177,6 +232,11 @@ class ToolkitBoundaries(unittest.TestCase):
                          r"^[A-Za-z0-9][A-Za-z0-9_.+\-]{0,127}$")
         self.assertIn("pads", actual["create_footprint"].input_schema["required"])
         self.assertIn("operations", actual["edit_footprint"].input_schema["required"])
+        self.assertEqual(actual["download_project_file"].input_schema["required"], ["path"])
+        download_annotations = actual["download_project_file"].annotations
+        assert download_annotations is not None
+        self.assertTrue(download_annotations.read_only_hint)
+        self.assertFalse(download_annotations.destructive_hint)
         edit_items = actual["edit_footprint"].input_schema["properties"]["operations"]["items"]
         self.assertEqual(edit_items["discriminator"]["propertyName"], "kind")
         for name in ["manufacture_pcb", "generate_interactive_bom", "panelize_pcb"]:
