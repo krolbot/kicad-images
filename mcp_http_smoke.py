@@ -58,7 +58,9 @@ async def authenticated_probe() -> None:
                 names = {tool.name for tool in tools}
                 required = {"get_version", "get_toolkit_status", "run_erc", "run_drc",
                             "add_copper_zone", "fill_zones", "create_footprint", "edit_footprint",
-                            "download_project_file"}
+                            "download_project_file", "upload_project_file", "list_project_files",
+                            "get_board_items", "edit_board_items", "get_schematic_items",
+                            "replace_project_settings"}
                 assert required <= names, sorted(required - names)
                 result = await session.call_tool("get_version", {})
                 assert not result.is_error, result
@@ -76,15 +78,25 @@ async def authenticated_probe() -> None:
                 for rejected_path in [str(ESCAPE_LINK), "/projects/http-mcp-smoke/../http-mcp-smoke/exact download.bin"]:
                     rejected = await session.call_tool("download_project_file", {"path": rejected_path})
                     assert rejected.is_error, rejected
-                zone = await session.call_tool("add_copper_zone", {
+                missing_cas = await session.call_tool("add_copper_zone", {
                     "pcb_path": str(BOARD),
                     "net_name": "/N1",
                     "layer": "F.Cu",
                     "corners": [{"x": 5, "y": 5}, {"x": 40, "y": 5},
                                 {"x": 40, "y": 30}, {"x": 5, "y": 30}],
                 })
+                assert missing_cas.is_error, missing_cas
+                zone = await session.call_tool("add_copper_zone", {
+                    "pcb_path": str(BOARD),
+                    "net_name": "/N1",
+                    "layer": "F.Cu",
+                    "corners": [{"x": 5, "y": 5}, {"x": 40, "y": 5},
+                                {"x": 40, "y": 30}, {"x": 5, "y": 30}],
+                    "expected_sha256": hashlib.sha256(BOARD.read_bytes()).hexdigest(),
+                })
                 assert not zone.is_error, zone
-                filled = await session.call_tool("fill_zones", {"pcb_path": str(BOARD)})
+                filled = await session.call_tool("fill_zones", {"pcb_path": str(BOARD),
+                    "expected_sha256": hashlib.sha256(BOARD.read_bytes()).hexdigest()})
                 assert not filled.is_error, filled
 
 
