@@ -1,5 +1,7 @@
 """Build-time authenticated Streamable HTTP smoke test."""
 import asyncio
+import base64
+import hashlib
 import os
 import shutil
 import signal
@@ -12,6 +14,7 @@ from pathlib import Path
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import BlobResourceContents, EmbeddedResource
 
 HOST = "127.0.0.1"
 PORT = 18080
@@ -19,6 +22,9 @@ URL = f"http://{HOST}:{PORT}/mcp"
 TOKEN = "build-only-mcp-token"
 BOARD_DIR = Path("/projects/http-mcp-smoke")
 BOARD = BOARD_DIR / "fixture.kicad_pcb"
+DOWNLOAD = BOARD_DIR / "exact download.bin"
+ESCAPE_LINK = BOARD_DIR / "escape-link"
+DOWNLOAD_PAYLOAD = b"\x00KiCad MCP HTTP download\xff\r\n"
 
 
 def wait_for_auth_gate() -> None:
@@ -51,19 +57,46 @@ async def authenticated_probe() -> None:
                 tools = (await session.list_tools()).tools
                 names = {tool.name for tool in tools}
                 required = {"get_version", "get_toolkit_status", "run_erc", "run_drc",
-                            "add_copper_zone", "fill_zones", "create_footprint", "edit_footprint"}
+                            "add_copper_zone", "fill_zones", "create_footprint", "edit_footprint",
+                            "download_project_file", "upload_project_file", "list_project_files",
+                            "get_board_items", "edit_board_items", "get_schematic_items",
+                            "replace_project_settings"}
                 assert required <= names, sorted(required - names)
                 result = await session.call_tool("get_version", {})
                 assert not result.is_error, result
-                zone = await session.call_tool("add_copper_zone", {
+                downloaded = await session.call_tool("download_project_file", {"path": str(DOWNLOAD)})
+                assert not downloaded.is_error, downloaded
+                resources = [block for block in downloaded.content if isinstance(block, EmbeddedResource)]
+                assert len(resources) == 1, downloaded
+                resource = resources[0].resource
+                assert isinstance(resource, BlobResourceContents), downloaded
+                assert base64.b64decode(resource.blob, validate=True) == DOWNLOAD_PAYLOAD
+                assert resource.uri == "kicad-project:///http-mcp-smoke/exact%20download.bin"
+                assert resource.meta is not None
+                assert resource.meta["bytes"] == len(DOWNLOAD_PAYLOAD)
+                assert resource.meta["sha256"] == hashlib.sha256(DOWNLOAD_PAYLOAD).hexdigest()
+                for rejected_path in [str(ESCAPE_LINK), "/projects/http-mcp-smoke/../http-mcp-smoke/exact download.bin"]:
+                    rejected = await session.call_tool("download_project_file", {"path": rejected_path})
+                    assert rejected.is_error, rejected
+                missing_cas = await session.call_tool("add_copper_zone", {
                     "pcb_path": str(BOARD),
                     "net_name": "/N1",
                     "layer": "F.Cu",
                     "corners": [{"x": 5, "y": 5}, {"x": 40, "y": 5},
                                 {"x": 40, "y": 30}, {"x": 5, "y": 30}],
                 })
+                assert missing_cas.is_error, missing_cas
+                zone = await session.call_tool("add_copper_zone", {
+                    "pcb_path": str(BOARD),
+                    "net_name": "/N1",
+                    "layer": "F.Cu",
+                    "corners": [{"x": 5, "y": 5}, {"x": 40, "y": 5},
+                                {"x": 40, "y": 30}, {"x": 5, "y": 30}],
+                    "expected_sha256": hashlib.sha256(BOARD.read_bytes()).hexdigest(),
+                })
                 assert not zone.is_error, zone
-                filled = await session.call_tool("fill_zones", {"pcb_path": str(BOARD)})
+                filled = await session.call_tool("fill_zones", {"pcb_path": str(BOARD),
+                    "expected_sha256": hashlib.sha256(BOARD.read_bytes()).hexdigest()})
                 assert not filled.is_error, filled
 
 
@@ -80,6 +113,9 @@ def prepare_board() -> None:
         *user_prefix, "xvfb-run", "-a", "-e", "/dev/stderr",
         "/usr/bin/python3", "/usr/local/share/kicad/mcp_board_batch_fixture.py", str(BOARD),
     ], check=True)
+    DOWNLOAD.write_bytes(DOWNLOAD_PAYLOAD)
+    DOWNLOAD.chmod(0o644)
+    ESCAPE_LINK.symlink_to("/etc/passwd")
 
 
 def main() -> None:

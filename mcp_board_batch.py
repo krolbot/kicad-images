@@ -12,6 +12,8 @@ import stat
 import subprocess
 import tempfile
 import threading
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -26,7 +28,7 @@ mcp = build_server(
     instructions="Read board UUID state and run CAS-guarded native dry-run/apply batches.",
 )
 _LOCK = threading.Lock()
-_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _WORKER = Path("/usr/local/share/kicad/mcp_board_batch_worker.py")
 _NATIVE_PYTHON = os.environ.get("KICAD_PYTHON", "/usr/bin/python3")
@@ -79,6 +81,39 @@ class NetWidth(BaseModel):
     width_mm: float = Field(gt=0, le=20)
 
 
+@contextmanager
+def _open_board(value: str):
+    path = Path(value)
+    if path.suffix != ".kicad_pcb" or not path.is_absolute():
+        raise ToolError("pcb_path must be an absolute, non-symlink .kicad_pcb path")
+    try:
+        root = Path(os.environ.get("KICAD_PROJECT_ROOT", "/projects")).resolve(strict=True)
+        relative = path.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ToolError("board must be a regular file below the project root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ToolError(f"board must be a regular file below {root}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    parent_fd = os.open(root, flags)
+    try:
+        for part in relative.parts[:-1]:
+            next_fd = os.open(part, flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        board_fd = os.open(relative.name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                           dir_fd=parent_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(board_fd).st_mode):
+                raise ToolError("board must be a regular file")
+        finally:
+            os.close(board_fd)
+        yield root / relative, Path(f"/proc/self/fd/{parent_fd}") / relative.name
+    except OSError as exc:
+        raise ToolError(f"board cannot be opened without following symlinks: {path}") from exc
+    finally:
+        os.close(parent_fd)
+
+
 def _path(value: str) -> Path:
     path = Path(value)
     if path.suffix != ".kicad_pcb" or not path.is_absolute() or path.is_symlink():
@@ -90,31 +125,57 @@ def _path(value: str) -> Path:
     root = Path(os.environ.get("KICAD_PROJECT_ROOT", "/projects")).resolve()
     if not resolved.is_relative_to(root) or not resolved.is_file():
         raise ToolError(f"board must be a regular file below {root}")
-    return resolved
+    return path
 
 
 def _sha(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb", closefd=True) as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
+def _copy_project_entry(parent_fd: int, name: str, target: Path) -> None:
+    entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISREG(entry.st_mode):
+        source_fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+                raise ToolError(f"project entry changed while staging: {name}")
+            with os.fdopen(source_fd, "rb", closefd=False) as source_stream, target.open("xb") as output:
+                shutil.copyfileobj(source_stream, output, 1024 * 1024)
+            os.chmod(target, stat.S_IMODE(entry.st_mode))
+        finally:
+            os.close(source_fd)
+        return
+    if stat.S_ISDIR(entry.st_mode):
+        child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                           dir_fd=parent_fd)
+        try:
+            target.mkdir(mode=stat.S_IMODE(entry.st_mode))
+            for child in os.listdir(child_fd):
+                _copy_project_entry(child_fd, child, target / child)
+        finally:
+            os.close(child_fd)
+        return
+    raise ToolError(f"project entry must not be a symlink or special file: {name}")
+
+
 def _stage_project(source: Path, destination: Path) -> Path:
-    """Copy the complete source-project context around a temporary board."""
-    for entry in source.parent.iterdir():
-        if entry == destination or entry.name.startswith(".kicad-batch-"):
-            continue
-        target = destination / entry.name
-        if entry.is_symlink():
-            target.symlink_to(os.readlink(entry))
-        elif entry.is_dir():
-            shutil.copytree(entry, target, symlinks=True)
-        elif entry.is_file():
-            shutil.copy2(entry, target)
-        else:
-            raise ToolError(f"unsupported project entry: {entry}")
+    """Copy the complete source-project context without following project links."""
+    match = re.fullmatch(r"/proc/self/fd/(\d+)", str(source.parent))
+    parent_fd = os.dup(int(match.group(1))) if match else os.open(
+        source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    try:
+        for name in os.listdir(parent_fd):
+            if name == ".kicad-mcp.lock" or name.startswith(".kicad-batch-"):
+                continue
+            _copy_project_entry(parent_fd, name, destination / name)
+    finally:
+        os.close(parent_fd)
     stage = destination / source.name
     if stage.is_symlink() or not stage.is_file():
         raise ToolError("staged board is not a regular file")
@@ -122,6 +183,8 @@ def _stage_project(source: Path, destination: Path) -> Path:
 
 
 def _worker(payload: dict, timeout: int = 180) -> dict:
+    path_match = re.match(r"^/proc/self/fd/(\d+)(?:/|$)", str(payload.get("path", "")))
+    pass_fds = (int(path_match.group(1)),) if path_match else ()
     try:
         result = subprocess.run(
             [_NATIVE_PYTHON, str(_WORKER)],
@@ -130,6 +193,7 @@ def _worker(payload: dict, timeout: int = 180) -> dict:
             capture_output=True,
             timeout=timeout,
             env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+            pass_fds=pass_fds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ToolError(f"native pcbnew worker failed: {exc}") from exc
@@ -145,6 +209,7 @@ def _worker(payload: dict, timeout: int = 180) -> dict:
 
 def _drc(path: Path, directory: Path, timeout: int) -> dict:
     report = directory / "drc.json"
+    path_match = re.match(r"^/proc/self/fd/(\d+)(?:/|$)", str(path))
     try:
         run = subprocess.run(
             [
@@ -162,6 +227,7 @@ def _drc(path: Path, directory: Path, timeout: int) -> dict:
             text=True,
             capture_output=True,
             timeout=timeout,
+            pass_fds=(int(path_match.group(1)),) if path_match else (),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ToolError(f"native DRC failed: {exc}") from exc
@@ -365,53 +431,129 @@ def _verify(
     return failures
 
 
-def _exchange(left: Path, right: Path) -> None:
-    """Atomically exchange two Linux directory entries without a missing-path window."""
+def _exchange_at(parent_fd: int, left: str, right: str) -> None:
+    """Atomically exchange two entries in one pinned Linux directory."""
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = libc.renameat2
     renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     renameat2.restype = ctypes.c_int
-    if renameat2(_AT_FDCWD, os.fsencode(left), _AT_FDCWD, os.fsencode(right), _RENAME_EXCHANGE):
+    if renameat2(parent_fd, os.fsencode(left), parent_fd, os.fsencode(right), _RENAME_EXCHANGE):
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
 
+def _exchange(left: Path, right: Path) -> None:
+    if left.parent != right.parent:
+        raise ToolError("atomic exchange requires one directory")
+    parent_fd = os.open(left.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        _exchange_at(parent_fd, left.name, right.name)
+    finally:
+        os.close(parent_fd)
+
+
 def _identity(path: Path) -> tuple[int, int]:
-    current = path.stat()
+    current = os.stat(path, follow_symlinks=False)
     return current.st_dev, current.st_ino
 
 
+def _identity_at(parent_fd: int, name: str) -> tuple[int, int]:
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    return current.st_dev, current.st_ino
+
+
+def _sha_fd(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha_at(parent_fd: int, name: str) -> str:
+    descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ToolError("board entry is not a regular file")
+        return _sha_fd(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_replace(source: Path, candidate: Path, expected_sha256: str) -> str:
-    with _LOCK, source.open("rb") as lock_stream:
-        fcntl.flock(lock_stream, fcntl.LOCK_EX)
-        actual = _sha(source)
-        if actual != expected_sha256:
-            raise ToolError(f"CAS mismatch before write: expected {expected_sha256}, found {actual}")
-        source_stat = source.stat()
-        os.chmod(candidate, stat.S_IMODE(source_stat.st_mode))
-        with candidate.open("rb") as stream:
-            os.fsync(stream.fileno())
-        candidate_sha = _sha(candidate)
-        candidate_identity = _identity(candidate)
-        _exchange(candidate, source)
-        if _identity(source) != candidate_identity:
-            raise ToolError("canonical board was replaced concurrently during atomic write")
-        previous_sha = _sha(candidate)
-        if previous_sha != expected_sha256:
-            if _identity(source) != candidate_identity or _sha(source) != candidate_sha:
-                raise ToolError("canonical board changed concurrently and safe rollback is impossible")
-            _exchange(candidate, source)
-            raise ToolError(f"CAS mismatch at atomic write: expected {expected_sha256}, found {previous_sha}")
-        if _identity(source) != candidate_identity or _sha(source) != candidate_sha:
-            raise ToolError("canonical board changed concurrently after atomic write")
-        with source.open("rb") as stream:
-            os.fsync(stream.fileno())
-        directory = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    return candidate_sha
+    match = re.fullmatch(r"/proc/self/fd/(\d+)", str(source.parent))
+    parent_fd = os.dup(int(match.group(1))) if match else os.open(
+        source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    temporary = f".{source.name}.batch-{uuid.uuid4().hex}{source.suffix}"
+    temporary_exists = False
+    exchanged = False
+    try:
+        with _LOCK:
+            source_fd = os.open(source.name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                                dir_fd=parent_fd)
+            try:
+                if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+                    raise ToolError("canonical board is not a regular file")
+                fcntl.flock(source_fd, fcntl.LOCK_EX)
+                actual = _sha_fd(source_fd)
+                if actual != expected_sha256:
+                    raise ToolError(f"CAS mismatch before write: expected {expected_sha256}, found {actual}")
+                source_stat = os.fstat(source_fd)
+                candidate_fd = os.open(candidate, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                temporary_fd = os.open(
+                    temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600, dir_fd=parent_fd,
+                )
+                temporary_exists = True
+                try:
+                    if not stat.S_ISREG(os.fstat(candidate_fd).st_mode):
+                        raise ToolError("candidate board is not a regular file")
+                    while chunk := os.read(candidate_fd, 1024 * 1024):
+                        pending = memoryview(chunk)
+                        while pending:
+                            pending = pending[os.write(temporary_fd, pending):]
+                    os.fchmod(temporary_fd, stat.S_IMODE(source_stat.st_mode))
+                    os.fsync(temporary_fd)
+                    candidate_sha = _sha_fd(temporary_fd)
+                    candidate_identity = (os.fstat(temporary_fd).st_dev, os.fstat(temporary_fd).st_ino)
+                finally:
+                    os.close(candidate_fd)
+                    os.close(temporary_fd)
+                _exchange_at(parent_fd, temporary, source.name)
+                exchanged = True
+                if _identity_at(parent_fd, source.name) != candidate_identity:
+                    raise ToolError("canonical board was replaced concurrently during atomic write")
+                previous_sha = _sha_fd(source_fd)
+                if previous_sha != expected_sha256:
+                    if (_identity_at(parent_fd, source.name) != candidate_identity or
+                            _sha_at(parent_fd, source.name) != candidate_sha):
+                        raise ToolError("canonical board changed concurrently and safe rollback is impossible")
+                    _exchange_at(parent_fd, temporary, source.name)
+                    exchanged = False
+                    raise ToolError(f"CAS mismatch at atomic write: expected {expected_sha256}, found {previous_sha}")
+                if (_identity_at(parent_fd, source.name) != candidate_identity or
+                        _sha_at(parent_fd, source.name) != candidate_sha):
+                    raise ToolError("canonical board changed concurrently after atomic write")
+                current_fd = os.open(source.name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                                     dir_fd=parent_fd)
+                try:
+                    os.fsync(current_fd)
+                finally:
+                    os.close(current_fd)
+                os.fsync(parent_fd)
+                os.unlink(temporary, dir_fd=parent_fd)
+                temporary_exists = False
+                return candidate_sha
+            finally:
+                os.close(source_fd)
+    finally:
+        if temporary_exists and not exchanged:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        os.close(parent_fd)
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -531,7 +673,7 @@ def edit_board_copper_batch(
     if max_passes < 1 or max_passes > 100 or autoroute_timeout < 1 or drc_timeout < 1:
         raise ToolError("max_passes must be 1..100 and timeouts must be positive")
 
-    with tempfile.TemporaryDirectory(prefix=".kicad-batch-", dir=path.parent) as tmp_name:
+    with tempfile.TemporaryDirectory(prefix="kicad-batch-") as tmp_name:
         tmp = Path(tmp_name)
         stage = _stage_project(path, tmp)
         stage_state = _worker(
@@ -642,3 +784,22 @@ def edit_board_copper_batch(
         new_sha = _atomic_replace(path, candidate, expected_sha256)
         result.update({"status": "applied", "source_unchanged": False, "new_sha256": new_sha})
         return result
+
+
+def _guard_registered_board_tool(tool_name: str) -> None:
+    tool = mcp._tool_manager._tools[tool_name]
+    original = tool.fn
+
+    def guarded(*, pcb_path: str, _original=original, **arguments):
+        with _open_board(pcb_path) as (display_path, stable_path):
+            result = _original(pcb_path=str(stable_path), **arguments)
+            if isinstance(result, dict) and result.get("pcb_path") == str(stable_path):
+                result["pcb_path"] = str(display_path)
+            return result
+
+    tool.fn = guarded
+    tool.is_async = False
+
+
+for _tool_name in ("get_board_edit_state", "edit_board_copper_batch"):
+    _guard_registered_board_tool(_tool_name)

@@ -1,5 +1,6 @@
 """Source-level checks for the filesystem CAS used by the native batch tool."""
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -53,7 +54,7 @@ class AtomicBoardWriteTests(unittest.TestCase):
             expected = hashlib.sha256(source.read_bytes()).hexdigest()
             result = batch._atomic_replace(source, candidate, expected)
             self.assertEqual(source.read_bytes(), b"accepted candidate")
-            self.assertEqual(candidate.read_bytes(), b"expected board")
+            self.assertEqual(candidate.read_bytes(), b"accepted candidate")
             self.assertEqual(result, hashlib.sha256(source.read_bytes()).hexdigest())
 
     def test_change_between_precheck_and_exchange_is_restored_not_overwritten(self):
@@ -63,21 +64,46 @@ class AtomicBoardWriteTests(unittest.TestCase):
             source.write_bytes(b"expected board")
             candidate.write_bytes(b"accepted candidate")
             expected = hashlib.sha256(source.read_bytes()).hexdigest()
-            exchange = batch._exchange
+            exchange = batch._exchange_at
             calls = 0
 
-            def race(left, right):
+            def race(parent_fd, left, right):
                 nonlocal calls
                 calls += 1
                 if calls == 1:
                     source.write_bytes(b"concurrent board")
-                exchange(left, right)
+                exchange(parent_fd, left, right)
 
-            with patch.object(batch, "_exchange", side_effect=race):
+            with patch.object(batch, "_exchange_at", side_effect=race):
                 with self.assertRaisesRegex(batch.ToolError, "CAS mismatch at atomic write"):
                     batch._atomic_replace(source, candidate, expected)
             self.assertEqual(source.read_bytes(), b"concurrent board")
             self.assertEqual(candidate.read_bytes(), b"accepted candidate")
+
+    def test_pinned_parent_prevents_symlink_swap_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "projects"
+            project = root / "project"
+            outside = Path(temporary) / "outside"
+            project.mkdir(parents=True)
+            outside.mkdir()
+            source = project / "board.kicad_pcb"
+            outside_board = outside / source.name
+            source.write_bytes(b"expected board")
+            outside_board.write_bytes(b"expected board")
+            candidate = Path(temporary) / "candidate.kicad_pcb"
+            candidate.write_bytes(b"accepted candidate")
+            expected = hashlib.sha256(source.read_bytes()).hexdigest()
+
+            with patch.dict(os.environ, {"KICAD_PROJECT_ROOT": str(root)}):
+                with batch._open_board(str(source)) as (_, stable):
+                    pinned = root / "project.pinned"
+                    project.rename(pinned)
+                    project.symlink_to(outside, target_is_directory=True)
+                    batch._atomic_replace(stable, candidate, expected)
+
+            self.assertEqual((pinned / source.name).read_bytes(), b"accepted candidate")
+            self.assertEqual(outside_board.read_bytes(), b"expected board")
 
 
 if __name__ == "__main__":
