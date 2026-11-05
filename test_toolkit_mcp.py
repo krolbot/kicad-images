@@ -729,8 +729,18 @@ class ToolkitBoundaries(unittest.TestCase):
                 toolkit.place_parts(str(self.board), str(output), [toolkit.PartPlacement(ref="R1", x_mm=0, y_mm=0)])
         self.assertFalse(output.exists())
 
-    def test_native_board_preserves_project_library_tables(self):
-        (self.project / "fp-lib-table").write_text("(fp_lib_table)")
+    def test_native_board_preserves_project_context(self):
+        library = self.project / "Sirokko.pretty"
+        library.mkdir()
+        (library / "Sirokko_Test.kicad_mod").write_text("(footprint \"Sirokko_Test\")\n")
+        (self.project / "Root_Test.kicad_mod").write_text("(footprint \"Root_Test\")\n")
+        (self.project / "fp-lib-table").write_text(
+            '(fp_lib_table (version 7) '
+            '(lib (name "Sirokko") (type "KiCad") (uri "${KIPRJMOD}/Sirokko.pretty") '
+            '(options "") (descr "local")) '
+            '(lib (name "Root") (type "KiCad") (uri "${KIPRJMOD}/") '
+            '(options "") (descr "project root")))\n'
+        )
         (self.project / "sym-lib-table").write_text("(sym_lib_table)")
         self.board.with_suffix(".kicad_dru").write_text('(version 1)\n(rule "keep")\n')
         output = self.root / "variant"
@@ -741,9 +751,56 @@ class ToolkitBoundaries(unittest.TestCase):
 
         with patch.object(toolkit, "_native", side_effect=native):
             toolkit._native_board("variant_apply", str(self.board), str(output), choices={"Power": "high"})
-        self.assertEqual((output / "fp-lib-table").read_text(), "(fp_lib_table)")
+        self.assertEqual((output / "fp-lib-table").read_text(), (self.project / "fp-lib-table").read_text())
         self.assertEqual((output / "sym-lib-table").read_text(), "(sym_lib_table)")
         self.assertEqual((output / "fixture.kicad_dru").read_text(), '(version 1)\n(rule "keep")\n')
+        self.assertEqual(
+            (output / "Sirokko.pretty" / "Sirokko_Test.kicad_mod").read_text(),
+            "(footprint \"Sirokko_Test\")\n",
+        )
+        self.assertEqual(
+            (output / "Root_Test.kicad_mod").read_text(),
+            "(footprint \"Root_Test\")\n",
+        )
+
+    def test_prefab_gate_stages_project_local_libraries(self):
+        library = self.project / "Sirokko.pretty"
+        library.mkdir()
+        (library / "Sirokko_Test.kicad_mod").write_text("(footprint \"Sirokko_Test\")\n")
+        (self.project / "Root_Test.kicad_mod").write_text("(footprint \"Root_Test\")\n")
+        (self.project / "fp-lib-table").write_text(
+            '(fp_lib_table (version 7) '
+            '(lib (name "Sirokko") (type "KiCad") (uri "${KIPRJMOD}/Sirokko.pretty") '
+            '(options "") (descr "local")) '
+            '(lib (name "Root") (type "KiCad") (uri "${KIPRJMOD}") '
+            '(options "") (descr "project root")))\n'
+        )
+        symbol = self.project / "nested" / "Sirokko.kicad_sym"
+        symbol.parent.mkdir()
+        symbol.write_text("(kicad_symbol_lib (version 20231120))\n")
+        (self.project / "sym-lib-table").write_text(
+            '(sym_lib_table (version 7) (lib (name "Sirokko") (type "KiCad") '
+            '(uri "${KIPRJMOD}/nested/Sirokko.kicad_sym") (options "") (descr "local")))\n'
+        )
+        output = self.root / "prefab"
+
+        def native(operation, _, **parameters):
+            self.assertEqual(operation, "prefab_gate")
+            staged_board = Path(parameters["input_pcb"])
+            self.assertTrue((staged_board.parent / "Sirokko.pretty" / "Sirokko_Test.kicad_mod").is_file())
+            self.assertEqual(
+                (staged_board.parent / "Root_Test.kicad_mod").read_text(),
+                "(footprint \"Root_Test\")\n",
+            )
+            self.assertEqual(
+                (staged_board.parent / "nested" / "Sirokko.kicad_sym").read_text(),
+                "(kicad_symbol_lib (version 20231120))\n",
+            )
+            return {"passed": True, "report": {"summary": {"errors": 0, "warnings": 0}, "checks": []}}
+
+        with patch.object(toolkit, "_native", side_effect=native):
+            toolkit.run_prefab_gate(str(self.board), str(output))
+        self.assertIn('"warnings": 0', (output / "prefab-gate.json").read_text())
 
     def test_timeout_stops_the_process_group(self):
         pidfile = self.root / "child.pid"

@@ -1474,12 +1474,13 @@ def replace_project_settings(
 
 
 LibraryTableKind = Literal["sym", "fp"]
+_PROJECT_LIBRARY_ROOT = "${KIPRJMOD}"
 
 
 def _validate_library_uri(value: str) -> None:
     variable = re.compile(r"^\$\{KICAD\d+_(?:SYMBOL|FOOTPRINT)_DIR\}(?:/.*)?$")
-    if value == "${KIPRJMOD}" or value.startswith("${KIPRJMOD}/"):
-        suffix = value.removeprefix("${KIPRJMOD}").lstrip("/")
+    if value == _PROJECT_LIBRARY_ROOT or value.startswith(f"{_PROJECT_LIBRARY_ROOT}/"):
+        suffix = value.removeprefix(_PROJECT_LIBRARY_ROOT).lstrip("/")
         if any(part in {"", ".", ".."} for part in Path(suffix).parts):
             raise ToolError("${KIPRJMOD} library URIs must not contain traversal")
         return
@@ -1617,6 +1618,65 @@ def _project_tables(source: Path) -> list[Path]:
     return tables
 
 
+def _stage_project_local_libraries(source: Path, work: Path) -> dict[Path, str]:
+    local_paths: set[Path] = set()
+    fingerprints: dict[Path, str] = {}
+    for table in _project_tables(source):
+        try:
+            tree = _cst.parse((work / table.name).read_bytes())
+        except (OSError, SyntaxError, UnicodeError) as exc:
+            raise ToolError(f"Invalid {table.name}: {exc}") from exc
+        expected_head = "fp_lib_table" if table.name == "fp-lib-table" else "sym_lib_table"
+        if len(tree.lists) != 1 or tree.lists[0].head != expected_head:
+            raise ToolError(f"{table.name} must contain one ({expected_head} ...) document")
+        root = tree.lists[0]
+        _validate_library_table(root)
+        for row in root.find_all("lib"):
+            uri = row.find("uri")
+            if uri is None or len(uri.atoms) != 2:
+                raise ToolError(f"Each {table.name} row must contain exactly one (uri ...) field")
+            value = uri.atoms[1].text
+            if value in {_PROJECT_LIBRARY_ROOT, f"{_PROJECT_LIBRARY_ROOT}/"}:
+                if table.name != "fp-lib-table":
+                    raise ToolError("A project-root symbol library must name a .kicad_sym file")
+                fingerprints[source.parent] = _project_fingerprint(source.parent)
+                local_paths.update(path.relative_to(source.parent)
+                                   for path in source.parent.glob("*.kicad_mod"))
+            elif value.startswith(f"{_PROJECT_LIBRARY_ROOT}/"):
+                local_paths.add(Path(value.removeprefix(f"{_PROJECT_LIBRARY_ROOT}/")))
+
+    staged: list[Path] = []
+    for relative in sorted(local_paths, key=lambda path: (len(path.parts), path.as_posix())):
+        if any(relative.is_relative_to(parent) for parent in staged):
+            continue
+        library = source.parent / relative
+        info = _symlink_free(library, allow_missing_final=True)
+        if info is None:
+            raise ToolError(f"Project-local library does not exist: {library}")
+        destination = work / relative
+        if destination.exists():
+            raise ToolError(f"Project-local library staging path already exists: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if stat.S_ISREG(info.st_mode):
+            fingerprint = _copy_project_file(library, destination)
+            if source.parent not in fingerprints:
+                fingerprints[library] = fingerprint
+        elif stat.S_ISDIR(info.st_mode):
+            with _open_project_directory(str(library)) as (_, library_fd):
+                stable_library = Path(f"/proc/self/fd/{library_fd}")
+                before = _tree_fingerprint(stable_library)
+                shutil.copytree(stable_library, destination, copy_function=shutil.copyfile, symlinks=False)
+                if (_tree_fingerprint(stable_library) != before
+                        or _tree_fingerprint(destination) != before):
+                    raise ToolError("A project-local library changed while it was staged")
+                if source.parent not in fingerprints:
+                    fingerprints[library] = before
+        else:
+            raise ToolError(f"Project-local libraries must be regular files or directories: {library}")
+        staged.append(relative)
+    return fingerprints
+
+
 @contextmanager
 def _staged_output_directory(output_dir: str) -> Iterator[tuple[Path, Path]]:
     """Build an output privately, then publish the complete directory without replacement."""
@@ -1651,22 +1711,20 @@ def _job(pcb_path: str, output_dir: str) -> Iterator[tuple[Path, Path, Path, Pat
         with tempfile.TemporaryDirectory(prefix="kicad-job-") as temporary:
             workspace = Path(temporary)
             board = workspace / source.name
-            original = _copy_project_file(source, board)
+            fingerprints = {source: _copy_project_file(source, board)}
             project = source.with_suffix(".kicad_pro")
             if _symlink_free(project, allow_missing_final=True) is not None:
-                _copy_project_file(project, board.with_suffix(".kicad_pro"))
+                fingerprints[project] = _copy_project_file(project, board.with_suffix(".kicad_pro"))
             rules = source.with_suffix(".kicad_dru")
             if _symlink_free(rules, allow_missing_final=True) is not None:
-                _copy_project_file(rules, board.with_suffix(".kicad_dru"))
+                fingerprints[rules] = _copy_project_file(rules, board.with_suffix(".kicad_dru"))
             for table in _project_tables(source):
-                _copy_project_file(table, workspace / table.name)
+                fingerprints[table] = _copy_project_file(table, workspace / table.name)
+            fingerprints.update(_stage_project_local_libraries(source, workspace))
             yield board, staged_output, workspace, destination
-            with _open_project_file(str(source)) as (_, current, _):
-                current_digest = hashlib.sha256()
-                for chunk in iter(lambda: current.read(1024 * 1024), b""):
-                    current_digest.update(chunk)
-            if current_digest.hexdigest() != original:
-                raise ToolError("The source board changed concurrently; the result was not accepted")
+            for path, expected in fingerprints.items():
+                if _project_fingerprint(path) != expected:
+                    raise ToolError(f"Project staging source changed concurrently: {path}")
 
 
 @contextmanager
@@ -2330,6 +2388,31 @@ def _schematics(board: Path) -> list[Path]:
     )
 
 
+def _publish_board_project(source: Path, output_board: Path, input_board: Path,
+                           destination: Path, work: Path, schematics: list[Path]) -> None:
+    published_board = destination / source.name
+    try:
+        output_stat = os.lstat(output_board)
+    except FileNotFoundError:
+        raise ToolError("Board operation did not produce a .kicad_pcb file") from None
+    if not stat.S_ISREG(output_stat.st_mode):
+        raise ToolError("Board operation did not produce a regular .kicad_pcb file")
+    if output_board != published_board:
+        shutil.copyfile(output_board, published_board)
+    for path in schematics:
+        relative = path.relative_to(source.parent)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(work / relative, target)
+    for suffix in (".kicad_pro", ".kicad_dru"):
+        sidecar = input_board.with_suffix(suffix)
+        if sidecar.is_file():
+            shutil.copyfile(sidecar, destination / sidecar.name)
+    for table in _project_tables(source):
+        shutil.copyfile(work / table.name, destination / table.name)
+    _stage_project_local_libraries(source, destination)
+
+
 def _native_board(operation: str, pcb_path: str, output_dir: str, **parameters: object) -> dict[str, JsonValue]:
     source = _path(pcb_path, ".kicad_pcb")
     # Enumerate before creating the staging tree; never discover our own copies.
@@ -2346,19 +2429,8 @@ def _native_board(operation: str, pcb_path: str, output_dir: str, **parameters: 
             parameters["report_dir"] = str(destination)
         result = _native(operation, work, input_pcb=str(board),
                          output_pcb=str(destination / source.name), **parameters)
-        # Retain the hierarchy and project rules beside the new board so native
-        # reopening and a subsequent replication do not lose their context.
-        for path in schematics:
-            relative = path.relative_to(source.parent)
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(work / relative, target)
-        for suffix in (".kicad_pro", ".kicad_dru"):
-            sidecar = board.with_suffix(suffix)
-            if sidecar.is_file():
-                shutil.copyfile(sidecar, destination / sidecar.name)
-        for table in _project_tables(source):
-            shutil.copyfile(work / table.name, destination / table.name)
+        _publish_board_project(source, destination / source.name, board,
+                               destination, work, schematics)
         # Do not advertise the removed staging input as an artifact.
         result["input_pcb"] = str(source)
         response = {**_result(destination), "operation": result}
@@ -2375,18 +2447,7 @@ def _ipc_board(operation: str, pcb_path: str, output_dir: str, **parameters: obj
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
         result = _ipc(operation, work, input_pcb=str(board), session_dir=str(work), **parameters)
-        shutil.copyfile(board, destination / source.name)
-        for path in schematics:
-            relative = path.relative_to(source.parent)
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(work / relative, target)
-        for suffix in (".kicad_pro", ".kicad_dru"):
-            sidecar = board.with_suffix(suffix)
-            if sidecar.is_file():
-                shutil.copyfile(sidecar, destination / sidecar.name)
-        for table in _project_tables(source):
-            shutil.copyfile(work / table.name, destination / table.name)
+        _publish_board_project(source, board, board, destination, work, schematics)
         response = {**_result(destination), "operation": result}
     return _restore_display_paths(response, {str(destination): str(display_destination)})
 
