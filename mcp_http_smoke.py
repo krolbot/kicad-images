@@ -1,4 +1,5 @@
 """Build-time authenticated Streamable HTTP smoke test."""
+import argparse
 import asyncio
 import base64
 import hashlib
@@ -9,6 +10,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from enum import StrEnum
 from pathlib import Path
 
 import httpx2
@@ -25,6 +27,12 @@ BOARD = BOARD_DIR / "fixture.kicad_pcb"
 DOWNLOAD = BOARD_DIR / "exact download.bin"
 ESCAPE_LINK = BOARD_DIR / "escape-link"
 DOWNLOAD_PAYLOAD = b"\x00KiCad MCP HTTP download\xff\r\n"
+
+
+class SmokeMode(StrEnum):
+    ALL = "all"
+    PREPARE = "prepare"
+    CLIENT = "client"
 
 
 def wait_for_auth_gate() -> None:
@@ -118,8 +126,11 @@ def prepare_board() -> None:
     ESCAPE_LINK.symlink_to("/etc/passwd")
 
 
-def main() -> None:
-    if os.environ.get("MCP_HTTP_SMOKE_CLIENT_ONLY") == "1":
+def main(mode: SmokeMode = SmokeMode.ALL) -> None:
+    if mode is SmokeMode.PREPARE:
+        prepare_board()
+        return
+    if mode is SmokeMode.CLIENT:
         asyncio.run(authenticated_probe())
         return
     prepare_board()
@@ -153,4 +164,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "mode", type=SmokeMode, choices=SmokeMode, nargs="?", default=SmokeMode.ALL
+    )
+    main(parser.parse_args().mode)

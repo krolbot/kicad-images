@@ -73,15 +73,15 @@ jobs:
           trap cleanup EXIT
           mkdir -p "$projects/http-mcp-smoke"
           chmod 0777 "$projects" "$projects/http-mcp-smoke"
-          docker run --rm --user 1000:1000 --read-only \
+          docker run --rm --network none --user 1000:1000 --read-only \
             --tmpfs /tmp:rw,nosuid,size=512m,mode=1777 \
             --cap-drop ALL --security-opt no-new-privileges:true \
             -e HOME=/tmp/kicad-home \
             -e XDG_CONFIG_HOME=/tmp/kicad-home/.config \
             -e XDG_CACHE_HOME=/tmp/kicad-home/.cache \
             -e KICAD_CONFIG_HOME=/tmp/kicad-home/.config/kicad \
-            -v "$projects:/projects" --entrypoint /bin/sh "$IMAGE" -c \
-            'xvfb-run -a -e /dev/stderr /usr/bin/python3 /usr/local/share/kicad/mcp_board_batch_fixture.py /projects/http-mcp-smoke/fixture.kicad_pcb & child=$!; wait "$child"'
+            -v "$projects:/projects" --entrypoint /opt/kicad-mcp/bin/python "$IMAGE" \
+            /usr/local/share/kicad/mcp_http_smoke.py prepare
           docker run -d --name "$name" --network none --user 1000:1000 --read-only \
             --tmpfs /tmp:rw,nosuid,size=512m,mode=1777 \
             --cap-drop ALL --security-opt no-new-privileges:true \
@@ -101,8 +101,8 @@ jobs:
             sleep 1
           done
           docker exec "$name" python3 -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 1).close()'
-          docker exec -e MCP_HTTP_SMOKE_CLIENT_ONLY=1 "$name" \
-            /opt/kicad-mcp/bin/python /usr/local/share/kicad/mcp_http_smoke.py
+          docker exec "$name" /opt/kicad-mcp/bin/python \
+            /usr/local/share/kicad/mcp_http_smoke.py client
       - name: Publish validated image
         run: |
           set -euo pipefail
